@@ -307,6 +307,159 @@ test("recon turn 1 sends the investigate prompt; turn 2+ sends the continuation 
   }
 });
 
+// -------------------------------------------------------------------
+// Integration tests: subprocess-based end-to-end companion tests
+// -------------------------------------------------------------------
+
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const COMPANION_PATH = fileURLToPath(
+  new URL("../plugins/codex/scripts/codex-companion.mjs", import.meta.url)
+);
+
+function makeSelfCollectGitFixture() {
+  // 3+ changed files triggers self-collect (DEFAULT_INLINE_DIFF_MAX_FILES = 2)
+  const root = mkdtempSync(path.join(tmpdir(), "codex-self-collect-test-"));
+  spawnSync("git", ["init", "-q", "-b", "main"], { cwd: root });
+  spawnSync("git", ["config", "user.email", "test@example.com"], { cwd: root });
+  spawnSync("git", ["config", "user.name", "Test"], { cwd: root });
+  spawnSync("git", ["config", "commit.gpgsign", "false"], { cwd: root });
+  writeFileSync(path.join(root, "README.md"), "# repo\n");
+  spawnSync("git", ["add", "."], { cwd: root });
+  spawnSync("git", ["commit", "-q", "-m", "init"], { cwd: root });
+  spawnSync("git", ["checkout", "-q", "-b", "feature"], { cwd: root });
+  mkdirSync(path.join(root, "src"), { recursive: true });
+  for (let i = 0; i < 5; i += 1) {
+    writeFileSync(path.join(root, "src", `f${i}.js`), `export const v${i} = ${i};\n`);
+  }
+  spawnSync("git", ["add", "."], { cwd: root });
+  spawnSync("git", ["commit", "-q", "-m", "feature"], { cwd: root });
+  return root;
+}
+
+function makeInlineGitFixture() {
+  // 1 changed file stays on inline-diff path
+  const root = mkdtempSync(path.join(tmpdir(), "codex-inline-test-"));
+  spawnSync("git", ["init", "-q", "-b", "main"], { cwd: root });
+  spawnSync("git", ["config", "user.email", "test@example.com"], { cwd: root });
+  spawnSync("git", ["config", "user.name", "Test"], { cwd: root });
+  spawnSync("git", ["config", "commit.gpgsign", "false"], { cwd: root });
+  writeFileSync(path.join(root, "README.md"), "# repo\n");
+  spawnSync("git", ["add", "."], { cwd: root });
+  spawnSync("git", ["commit", "-q", "-m", "init"], { cwd: root });
+  spawnSync("git", ["checkout", "-q", "-b", "feature"], { cwd: root });
+  writeFileSync(path.join(root, "one.js"), "export const v = 1;\n");
+  spawnSync("git", ["add", "."], { cwd: root });
+  spawnSync("git", ["commit", "-q", "-m", "tiny"], { cwd: root });
+  return root;
+}
+
+function runCompanion(args, env) {
+  return spawnSync("node", [COMPANION_PATH, ...args], {
+    env: { ...process.env, ...env },
+    encoding: "utf8",
+    timeout: 30000
+  });
+}
+
+test("self-collect path uses runAppServerInvestigation end-to-end", async () => {
+  const cwd = makeSelfCollectGitFixture();
+  const fake = setupFakeCodex({ cwd });
+  try {
+    // Recon turn 1: runs a command, no convergence
+    fake.queueTurnResponse({
+      commands: [{ command: "git diff main...HEAD", exitCode: 0 }],
+      finalAnswer: null
+    });
+    // Recon turn 2: no commands, final answer => converges
+    fake.queueTurnResponse({
+      commands: [],
+      finalAnswer: { text: "Investigation done." }
+    });
+    // Finalize turn: structured output
+    fake.queueTurnResponse({
+      finalAnswer: {
+        text: JSON.stringify({
+          verdict: "needs-attention",
+          summary: "Found risk in src/f1.js.",
+          findings: [{
+            severity: "high",
+            title: "Unguarded export",
+            file: "src/f1.js",
+            line_start: 1,
+            line_end: 1,
+            confidence: 0.7,
+            body: "Module exports v1 with no validation.",
+            recommendation: "Add validation."
+          }],
+          next_steps: []
+        })
+      }
+    });
+
+    const result = runCompanion(
+      ["adversarial-review", "--base", "main", "--scope", "branch", "--cwd", cwd, "--json"],
+      fake.env
+    );
+
+    assert.equal(result.status, 0, `expected exit 0, stderr: ${result.stderr}`);
+
+    // stdout may contain progress lines followed by JSON; parse the last JSON object
+    const stdout = result.stdout.trim();
+    const payload = JSON.parse(stdout);
+    assert.ok(payload.investigation, "self-collect payload must have investigation field");
+    assert.equal(payload.investigation.turnCount, 2);
+    assert.equal(payload.investigation.truncated, false);
+    assert.equal(payload.result?.verdict, "needs-attention");
+  } finally {
+    fake.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("inline-diff path does not call runAppServerInvestigation", async () => {
+  const cwd = makeInlineGitFixture();
+  const fake = setupFakeCodex({ cwd });
+  try {
+    // Single turn: inline path uses runAppServerTurn
+    fake.queueTurnResponse({
+      finalAnswer: {
+        text: JSON.stringify({
+          verdict: "approve",
+          summary: "No material issues found.",
+          findings: [],
+          next_steps: []
+        })
+      }
+    });
+
+    const result = runCompanion(
+      ["adversarial-review", "--base", "main", "--scope", "branch", "--cwd", cwd, "--json"],
+      fake.env
+    );
+
+    assert.equal(result.status, 0, `expected exit 0, stderr: ${result.stderr}`);
+    const payload = JSON.parse(result.stdout.trim());
+    assert.equal(payload.investigation, undefined,
+      "inline-path payload must not carry the investigation field");
+
+    const requests = fake.requests;
+    const starts = requests.filter((r) => r.method === "turn/start");
+    assert.equal(starts.length, 1, "inline path is single-turn");
+  } finally {
+    fake.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// -------------------------------------------------------------------
+// Unit tests for runAppServerInvestigation (continued from above)
+// -------------------------------------------------------------------
+
 test("outputSchema-set finalize turn produces schema-conformant final message", async () => {
   const cwd = makeTempDir("codex-inv-test-");
   const fake = setupFakeCodex({ cwd });

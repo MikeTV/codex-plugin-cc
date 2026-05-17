@@ -17,6 +17,7 @@ import {
     interruptAppServerTurn,
     parseStructuredOutput,
     readOutputSchema,
+    runAppServerInvestigation,
     runAppServerReview,
     runAppServerTurn
   } from "./lib/codex.mjs";
@@ -422,14 +423,29 @@ async function executeReviewRun(request) {
   }
 
   const context = collectReviewContext(request.cwd, target);
-  const prompt = buildAdversarialReviewPrompt(context, focusText);
-  const result = await runAppServerTurn(context.repoRoot, {
-    prompt,
-    model: request.model,
-    sandbox: "read-only",
-    outputSchema: readOutputSchema(REVIEW_SCHEMA),
-    onProgress: request.onProgress
-  });
+  let result;
+  if (context.inputMode === "self-collect") {
+    const investigatePrompt = buildAdversarialInvestigatePrompt(context, focusText);
+    const finalizePrompt = buildAdversarialFinalizePrompt(context, focusText);
+    result = await runAppServerInvestigation(context.repoRoot, {
+      investigatePrompt,
+      finalizePrompt,
+      outputSchema: readOutputSchema(REVIEW_SCHEMA),
+      model: request.model,
+      sandbox: "read-only",
+      maxInvestigationTurns: request.maxInvestigationTurns,
+      onProgress: request.onProgress
+    });
+  } else {
+    const prompt = buildAdversarialReviewPrompt(context, focusText);
+    result = await runAppServerTurn(context.repoRoot, {
+      prompt,
+      model: request.model,
+      sandbox: "read-only",
+      outputSchema: readOutputSchema(REVIEW_SCHEMA),
+      onProgress: request.onProgress
+    });
+  }
   const parsed = parseStructuredOutput(result.finalMessage, {
     status: result.status,
     failureMessage: result.error?.message ?? result.stderr
@@ -454,9 +470,12 @@ async function executeReviewRun(request) {
     parseError: parsed.parseError,
     reasoningSummary: result.reasoningSummary
   };
+  if (result.investigation) {
+    payload.investigation = result.investigation;
+  }
 
   return {
-    exitStatus: result.status,
+    exitStatus: typeof result.status === "number" ? result.status : (result.status?.code ?? 1),
     threadId: result.threadId,
     turnId: result.turnId,
     payload,
