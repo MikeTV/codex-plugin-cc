@@ -1088,7 +1088,7 @@ export async function runAppServerInvestigation(cwd, options = {}) {
         );
       } catch (transportError) {
         return {
-          status: { code: 1, kind: "error" },
+          status: 1,
           threadId,
           turnId: null,
           finalMessage: "",
@@ -1163,7 +1163,7 @@ export async function runAppServerInvestigation(cwd, options = {}) {
       );
     } catch (transportError) {
       return {
-        status: { code: 1, kind: "error" },
+        status: 1,
         threadId,
         turnId: null,
         finalMessage: "",

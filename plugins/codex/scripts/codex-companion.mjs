@@ -475,7 +475,7 @@ async function executeReviewRun(request) {
   }
 
   return {
-    exitStatus: typeof result.status === "number" ? result.status : (result.status?.code ?? 1),
+    exitStatus: result.status,
     threadId: result.threadId,
     turnId: result.turnId,
     payload,
