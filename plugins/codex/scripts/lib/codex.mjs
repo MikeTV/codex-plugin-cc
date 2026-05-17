@@ -1028,6 +1028,180 @@ export async function runAppServerTurn(cwd, options = {}) {
   });
 }
 
+const DEFAULT_MAX_INVESTIGATION_TURNS = 10;
+const INVESTIGATION_CONTINUATION_CUE = "Continue your investigation.";
+
+export async function runAppServerInvestigation(cwd, options = {}) {
+  const availability = getCodexAvailability(cwd);
+  if (!availability.available) {
+    throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
+  }
+
+  const investigatePrompt = options.investigatePrompt?.trim();
+  const finalizePrompt = options.finalizePrompt?.trim();
+  if (!investigatePrompt) {
+    throw new Error("runAppServerInvestigation requires investigatePrompt.");
+  }
+  if (!finalizePrompt) {
+    throw new Error("runAppServerInvestigation requires finalizePrompt.");
+  }
+  const maxInvestigationTurns = Number.isFinite(options.maxInvestigationTurns) && options.maxInvestigationTurns > 0
+    ? Math.floor(options.maxInvestigationTurns)
+    : DEFAULT_MAX_INVESTIGATION_TURNS;
+  const sandbox = options.sandbox ?? "read-only";
+
+  return withAppServer(cwd, async (client) => {
+    emitProgress(options.onProgress, "Starting Codex investigation thread.", "starting");
+    const startResponse = await startThread(client, cwd, {
+      model: options.model,
+      sandbox,
+      ephemeral: true,
+      threadName: null
+    });
+    const threadId = startResponse.thread.id;
+    emitProgress(options.onProgress, `Thread ready (${threadId}).`, "starting", { threadId });
+
+    let turnCount = 0;
+    let truncated = false;
+    let totalCommandsRun = 0;
+    const aggregatedCommandExecutions = [];
+    const aggregatedFileChanges = [];
+
+    for (let i = 1; i <= maxInvestigationTurns; i += 1) {
+      const promptText = i === 1 ? investigatePrompt : INVESTIGATION_CONTINUATION_CUE;
+      emitProgress(options.onProgress, `Investigation turn ${i}.`, "investigating");
+
+      let turnState;
+      try {
+        turnState = await captureTurn(
+          client,
+          threadId,
+          () =>
+            client.request("turn/start", {
+              threadId,
+              input: buildTurnInput(promptText),
+              model: options.model ?? null,
+              effort: options.effort ?? null,
+              outputSchema: null
+            }),
+          { onProgress: options.onProgress }
+        );
+      } catch (transportError) {
+        return {
+          status: { code: 1, kind: "error" },
+          threadId,
+          turnId: null,
+          finalMessage: "",
+          reasoningSummary: [],
+          turn: null,
+          error: { message: transportError?.message ?? String(transportError) },
+          stderr: cleanCodexStderr(client.stderr),
+          fileChanges: aggregatedFileChanges,
+          touchedFiles: collectTouchedFiles(aggregatedFileChanges),
+          commandExecutions: aggregatedCommandExecutions,
+          investigation: { turnCount, truncated: false }
+        };
+      }
+
+      turnCount = i;
+      const turnCommandCount = turnState.commandExecutions.length;
+      totalCommandsRun += turnCommandCount;
+      for (const cmd of turnState.commandExecutions) {
+        aggregatedCommandExecutions.push(cmd);
+      }
+      for (const change of turnState.fileChanges) {
+        aggregatedFileChanges.push(change);
+      }
+
+      if (turnState.error) {
+        return {
+          status: buildResultStatus(turnState),
+          threadId,
+          turnId: turnState.turnId,
+          finalMessage: turnState.lastAgentMessage,
+          reasoningSummary: turnState.reasoningSummary,
+          turn: turnState.finalTurn,
+          error: turnState.error,
+          stderr: cleanCodexStderr(client.stderr),
+          fileChanges: aggregatedFileChanges,
+          touchedFiles: collectTouchedFiles(aggregatedFileChanges),
+          commandExecutions: aggregatedCommandExecutions,
+          investigation: { turnCount, truncated: false }
+        };
+      }
+
+      const converged = turnState.finalAnswerSeen === true && turnCommandCount === 0;
+      if (converged) {
+        break;
+      }
+
+      if (i === maxInvestigationTurns) {
+        truncated = true;
+      }
+    }
+
+    if (totalCommandsRun === 0) {
+      truncated = true;
+    }
+
+    emitProgress(options.onProgress, "Investigation complete; finalizing structured output.", "finalizing");
+
+    let finalizeState;
+    try {
+      finalizeState = await captureTurn(
+        client,
+        threadId,
+        () =>
+          client.request("turn/start", {
+            threadId,
+            input: buildTurnInput(finalizePrompt),
+            model: options.model ?? null,
+            effort: options.effort ?? null,
+            outputSchema: options.outputSchema ?? null
+          }),
+        { onProgress: options.onProgress }
+      );
+    } catch (transportError) {
+      return {
+        status: { code: 1, kind: "error" },
+        threadId,
+        turnId: null,
+        finalMessage: "",
+        reasoningSummary: [],
+        turn: null,
+        error: { message: transportError?.message ?? String(transportError) },
+        stderr: cleanCodexStderr(client.stderr),
+        fileChanges: aggregatedFileChanges,
+        touchedFiles: collectTouchedFiles(aggregatedFileChanges),
+        commandExecutions: aggregatedCommandExecutions,
+        investigation: { turnCount, truncated }
+      };
+    }
+
+    for (const cmd of finalizeState.commandExecutions) {
+      aggregatedCommandExecutions.push(cmd);
+    }
+    for (const change of finalizeState.fileChanges) {
+      aggregatedFileChanges.push(change);
+    }
+
+    return {
+      status: buildResultStatus(finalizeState),
+      threadId,
+      turnId: finalizeState.turnId,
+      finalMessage: finalizeState.lastAgentMessage,
+      reasoningSummary: finalizeState.reasoningSummary,
+      turn: finalizeState.finalTurn,
+      error: finalizeState.error,
+      stderr: cleanCodexStderr(client.stderr),
+      fileChanges: aggregatedFileChanges,
+      touchedFiles: collectTouchedFiles(aggregatedFileChanges),
+      commandExecutions: aggregatedCommandExecutions,
+      investigation: { turnCount, truncated }
+    };
+  });
+}
+
 export async function findLatestTaskThread(cwd) {
   const availability = getCodexAvailability(cwd);
   if (!availability.available) {
