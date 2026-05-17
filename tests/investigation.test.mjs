@@ -187,6 +187,7 @@ test("phase-1 soft error (turn/failed) aborts before phase-2 finalize", async ()
     });
 
     assert.ok(result.error, "result should have an error");
+    assert.match(result.error.message, /model produced unrenderable response/);
     assert.equal(result.investigation.turnCount, 2, "soft-error turn IS counted");
 
     const requests = fake.requests;
