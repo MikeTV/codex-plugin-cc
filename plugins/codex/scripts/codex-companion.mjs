@@ -729,11 +729,10 @@ async function handleReviewCommand(argv, config) {
   const rawMaxTurns = options["max-investigation-turns"];
   let maxInvestigationTurns;
   if (rawMaxTurns !== undefined) {
-    const parsedTurns = Number.parseInt(rawMaxTurns, 10);
-    if (!Number.isFinite(parsedTurns) || parsedTurns <= 0) {
+    if (!/^[1-9][0-9]*$/.test(String(rawMaxTurns))) {
       throw new Error(`--max-investigation-turns must be a positive integer (got: ${rawMaxTurns})`);
     }
-    maxInvestigationTurns = parsedTurns;
+    maxInvestigationTurns = Number(rawMaxTurns);
   }
 
   const cwd = resolveCommandCwd(options);

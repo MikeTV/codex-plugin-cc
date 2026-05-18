@@ -687,3 +687,28 @@ test("invalid --max-investigation-turns raises a clear error", () => {
     "error message should explain the validation failure"
   );
 });
+
+test("--max-investigation-turns rejects malformed numeric tokens", () => {
+  // parseInt-style salvage must NOT accept these — they are typos, not valid input.
+  const cases = [
+    "1.5",      // parseInt would yield 1
+    "10abc",    // parseInt would yield 10
+    "1e2",      // exponential notation: Number(...) yields 100, but the contract is "integer literal"
+    "  5",      // leading whitespace from accidental quoting
+    "0",        // zero is not positive
+    "-3",       // negative integer
+    ""          // empty string
+  ];
+  for (const value of cases) {
+    const r = spawnSync("node",
+      [COMPANION_PATH, "adversarial-review", "--max-investigation-turns", value],
+      { encoding: "utf8", timeout: 30000 }
+    );
+    assert.notEqual(r.status, 0, `value ${JSON.stringify(value)} should exit non-zero`);
+    assert.match(
+      r.stderr,
+      /must be a positive integer/,
+      `value ${JSON.stringify(value)} should trigger the validation error`
+    );
+  }
+});
