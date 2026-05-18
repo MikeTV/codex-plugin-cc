@@ -65,6 +65,47 @@ test("converges when Codex emits a final-answer turn with no commands", async ()
   }
 });
 
+test("converges when agentMessage has no `final_answer` phase tag (real-world case)", async () => {
+  // In production, recon turns run with outputSchema=null, and the
+  // app-server does NOT always tag agent messages with phase="final_answer".
+  // The convergence detector must treat any 0-command turn that emits an
+  // agent message as convergence — otherwise the model keeps insisting it
+  // has converged but the loop refuses to stop.
+  const cwd = makeTempDir("codex-inv-test-");
+  const fake = setupFakeCodex({ cwd });
+  try {
+    fake.queueTurnResponse({
+      commands: [{ command: "git diff HEAD~1", exitCode: 0 }],
+      finalAnswer: null
+    });
+    // Recon turn 2: no commands, agent message WITHOUT final_answer phase
+    // => must still converge (this is what real codex sends in recon mode).
+    fake.queueTurnResponse({
+      commands: [],
+      finalAnswer: { text: "My investigation is complete.", phase: "agent_message" }
+    });
+    fake.queueTurnResponse({
+      finalAnswer: { text: STRUCTURED_REVIEW }
+    });
+
+    const result = await runAppServerInvestigation(fake.cwd, {
+      investigatePrompt: "Investigate.",
+      finalizePrompt: "Finalize.",
+      outputSchema: { type: "object", required: ["verdict"] }
+    });
+
+    assert.equal(result.investigation.turnCount, 2,
+      "convergence on the no-command + agentMessage turn must not be missed");
+    assert.equal(result.investigation.truncated, false);
+
+    const requests = fake.requests;
+    const starts = requests.filter((r) => r.method === "turn/start");
+    assert.equal(starts.length, 3, "2 recon + 1 finalize");
+  } finally {
+    fake.close();
+  }
+});
+
 test("respects maxInvestigationTurns and marks truncated", async () => {
   const cwd = makeTempDir("codex-inv-test-");
   const fake = setupFakeCodex({ cwd });

@@ -397,7 +397,8 @@ rl.on("line", (line) => {
           }
 
           if (entry && entry.finalAnswer) {
-            send({ method: "item/completed", params: { threadId: thread.id, turnId, item: { type: "agentMessage", id: "msg_" + turnId, text: entry.finalAnswer.text, phase: "final_answer" } } });
+            const phase = entry.finalAnswer.phase ?? "final_answer";
+            send({ method: "item/completed", params: { threadId: thread.id, turnId, item: { type: "agentMessage", id: "msg_" + turnId, text: entry.finalAnswer.text, phase } } });
           }
 
           if (entry && entry.turnError) {

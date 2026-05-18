@@ -1130,7 +1130,15 @@ export async function runAppServerInvestigation(cwd, options = {}) {
         };
       }
 
-      const converged = turnState.finalAnswerSeen === true && turnCommandCount === 0;
+      // Convergence: a turn that produces no commands and emits an agent
+      // message is the contract the investigate prompt teaches the model
+      // ("a summary message with no further command calls signals readiness").
+      // The legacy check required `phase: "final_answer"`, but recon turns
+      // run with outputSchema=null so the app-server does not always tag
+      // messages with that phase — leading to runaway turns where the model
+      // keeps insisting it has converged but the loop refuses to listen.
+      const turnHadAgentMessage = Boolean(turnState.lastAgentMessage);
+      const converged = turnCommandCount === 0 && turnHadAgentMessage;
       if (converged) {
         break;
       }
