@@ -231,6 +231,10 @@ test("phase-1 soft error (turn/failed) aborts before phase-2 finalize", async ()
     assert.ok(result.error, "result should have an error");
     assert.match(result.error.message, /model produced unrenderable response/);
     assert.equal(result.investigation.turnCount, 2, "soft-error turn IS counted");
+    // A turn/completed with status="completed" can still arrive after an
+    // error notification, so result.status must be derived from the error,
+    // not from finalTurn.status. CI/automation relies on this.
+    assert.equal(result.status, 1, "soft-error path returns numeric status 1");
 
     const requests = fake.requests;
     const starts = requests.filter((r) => r.method === "turn/start");

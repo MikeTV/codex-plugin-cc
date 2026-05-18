@@ -658,6 +658,9 @@ async function resumeThread(client, threadId, cwd, options = {}) {
 }
 
 function buildResultStatus(turnState) {
+  if (turnState.error) {
+    return 1;
+  }
   return turnState.finalTurn?.status === "completed" ? 0 : 1;
 }
 
