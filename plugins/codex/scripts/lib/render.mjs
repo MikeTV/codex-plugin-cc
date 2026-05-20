@@ -161,6 +161,17 @@ function pushJobDetails(lines, job, options = {}) {
       lines.push(`    ${line}`);
     }
   }
+  if (job.worktreePath) {
+    lines.push(`  Worktree path: ${job.worktreePath}`);
+    if (job.worktreeBranch) {
+      lines.push(`  Worktree branch: ${job.worktreeBranch}`);
+    }
+    if (options.showWorktreeActions && job.worktreeBaseBranch) {
+      lines.push(`  Diff:   git diff ${job.worktreeBaseBranch}...${job.worktreeBranch}`);
+      lines.push(`  Merge:  git merge ${job.worktreeBranch}`);
+      lines.push(`  Remove: git worktree remove ${job.worktreePath}`);
+    }
+  }
 }
 
 function appendReasoningSection(lines, reasoningSummary) {
@@ -314,12 +325,38 @@ export function renderNativeReviewResult(result, meta) {
 
 export function renderTaskResult(parsedResult, meta) {
   const rawOutput = typeof parsedResult?.rawOutput === "string" ? parsedResult.rawOutput : "";
+  const worktreeBlock = renderWorktreesBlock(meta);
+
   if (rawOutput) {
-    return rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`;
+    const base = rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`;
+    return worktreeBlock ? `${base}\n${worktreeBlock}` : base;
   }
 
   const message = String(parsedResult?.failureMessage ?? "").trim() || "Codex did not return a final message.";
-  return `${message}\n`;
+  const base = `${message}\n`;
+  return worktreeBlock ? `${base}\n${worktreeBlock}` : base;
+}
+
+export function renderWorktreesBlock(meta) {
+  if (!meta?.worktreePath) {
+    return null;
+  }
+
+  const lines = [
+    "Worktree:",
+    `  Path:   ${meta.worktreePath}`,
+    `  Branch: ${meta.worktreeBranch ?? "unknown"}`
+  ];
+
+  if (meta.worktreeBaseBranch) {
+    lines.push("");
+    lines.push("Next steps:");
+    lines.push(`  Diff:   git diff ${meta.worktreeBaseBranch}...${meta.worktreeBranch}`);
+    lines.push(`  Merge:  git merge ${meta.worktreeBranch}`);
+    lines.push(`  Remove: git worktree remove ${meta.worktreePath}`);
+  }
+
+  return `${lines.join("\n")}\n`;
 }
 
 export function renderStatusReport(report) {
@@ -382,7 +419,8 @@ export function renderJobStatusReport(job) {
     showLog: true,
     showCancelHint: true,
     showResultHint: true,
-    showReviewHint: true
+    showReviewHint: true,
+    showWorktreeActions: true
   });
   return `${lines.join("\n").trimEnd()}\n`;
 }
@@ -390,12 +428,15 @@ export function renderJobStatusReport(job) {
 export function renderStoredJobResult(job, storedJob) {
   const threadId = storedJob?.threadId ?? job.threadId ?? null;
   const resumeCommand = threadId ? `codex resume ${threadId}` : null;
+  const worktreeBlock = renderWorktreesBlock(job);
+
   if (isStructuredReviewStoredResult(storedJob) && storedJob?.rendered) {
     const output = storedJob.rendered.endsWith("\n") ? storedJob.rendered : `${storedJob.rendered}\n`;
     if (!threadId) {
-      return output;
+      return worktreeBlock ? `${output}\n${worktreeBlock}` : output;
     }
-    return `${output}\nCodex session ID: ${threadId}\nResume in Codex: ${resumeCommand}\n`;
+    const base = `${output}\nCodex session ID: ${threadId}\nResume in Codex: ${resumeCommand}\n`;
+    return worktreeBlock ? `${base}\n${worktreeBlock}` : base;
   }
 
   const rawOutput =
@@ -405,17 +446,19 @@ export function renderStoredJobResult(job, storedJob) {
   if (rawOutput) {
     const output = rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`;
     if (!threadId) {
-      return output;
+      return worktreeBlock ? `${output}\n${worktreeBlock}` : output;
     }
-    return `${output}\nCodex session ID: ${threadId}\nResume in Codex: ${resumeCommand}\n`;
+    const base = `${output}\nCodex session ID: ${threadId}\nResume in Codex: ${resumeCommand}\n`;
+    return worktreeBlock ? `${base}\n${worktreeBlock}` : base;
   }
 
   if (storedJob?.rendered) {
     const output = storedJob.rendered.endsWith("\n") ? storedJob.rendered : `${storedJob.rendered}\n`;
     if (!threadId) {
-      return output;
+      return worktreeBlock ? `${output}\n${worktreeBlock}` : output;
     }
-    return `${output}\nCodex session ID: ${threadId}\nResume in Codex: ${resumeCommand}\n`;
+    const base = `${output}\nCodex session ID: ${threadId}\nResume in Codex: ${resumeCommand}\n`;
+    return worktreeBlock ? `${base}\n${worktreeBlock}` : base;
   }
 
   const lines = [
@@ -442,7 +485,8 @@ export function renderStoredJobResult(job, storedJob) {
     lines.push("", "No captured result payload was stored for this job.");
   }
 
-  return `${lines.join("\n").trimEnd()}\n`;
+  const base = `${lines.join("\n").trimEnd()}\n`;
+  return worktreeBlock ? `${base}\n${worktreeBlock}` : base;
 }
 
 export function renderCancelReport(job) {

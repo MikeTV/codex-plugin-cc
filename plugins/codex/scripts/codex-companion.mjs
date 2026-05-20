@@ -7,6 +7,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
+import { resolveCodexSandboxMode } from "./lib/codex-config.mjs";
 import {
     buildPersistentTaskThreadName,
     DEFAULT_CONTINUE_PROMPT,
@@ -52,7 +53,7 @@ import {
   runTrackedJob,
   SESSION_ID_ENV
 } from "./lib/tracked-jobs.mjs";
-import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
+import { resolveWorkspaceRoot, createWorktree } from "./lib/workspace.mjs";
 import {
   renderNativeReviewResult,
   renderReviewResult,
@@ -459,6 +460,7 @@ async function executeReviewRun(request) {
 
 async function executeTaskRun(request) {
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
+  const codexCwd = request.worktreePath ?? workspaceRoot;
   ensureCodexAvailable(request.cwd);
 
   const taskMetadata = buildTaskRunMetadata({
@@ -481,13 +483,13 @@ async function executeTaskRun(request) {
     throw new Error("Provide a prompt, a prompt file, piped stdin, or use --resume-last.");
   }
 
-  const result = await runAppServerTurn(workspaceRoot, {
+  const result = await runAppServerTurn(codexCwd, {
     resumeThreadId,
     prompt: request.prompt,
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
     model: request.model,
     effort: request.effort,
-    sandbox: request.write ? "workspace-write" : "read-only",
+    sandbox: resolveCodexSandboxMode(workspaceRoot) ?? (request.write ? "workspace-write" : "read-only"),
     onProgress: request.onProgress,
     persistThread: true,
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
@@ -504,7 +506,10 @@ async function executeTaskRun(request) {
     {
       title: taskMetadata.title,
       jobId: request.jobId ?? null,
-      write: Boolean(request.write)
+      write: Boolean(request.write),
+      worktreePath: request.worktreePath ?? null,
+      worktreeBranch: request.worktreeBranch ?? null,
+      worktreeBaseBranch: request.worktreeBaseBranch ?? null
     }
   );
   const payload = {
@@ -512,7 +517,10 @@ async function executeTaskRun(request) {
     threadId: result.threadId,
     rawOutput,
     touchedFiles: result.touchedFiles,
-    reasoningSummary: result.reasoningSummary
+    reasoningSummary: result.reasoningSummary,
+    worktreePath: request.worktreePath ?? null,
+    worktreeBranch: request.worktreeBranch ?? null,
+    worktreeBaseBranch: request.worktreeBaseBranch ?? null
   };
 
   return {
@@ -573,9 +581,9 @@ function getJobKindLabel(kind, jobClass) {
   return jobClass === "review" ? "review" : "rescue";
 }
 
-function createCompanionJob({ prefix, kind, title, workspaceRoot, jobClass, summary, write = false }) {
+function createCompanionJob({ prefix, kind, title, workspaceRoot, jobClass, summary, write = false, id }) {
   return createJobRecord({
-    id: generateJobId(prefix),
+    id: id ?? generateJobId(prefix),
     kind,
     kindLabel: getJobKindLabel(kind, jobClass),
     title,
@@ -598,19 +606,31 @@ function createTrackedProgress(job, options = {}) {
   };
 }
 
-function buildTaskJob(workspaceRoot, taskMetadata, write) {
-  return createCompanionJob({
+function buildTaskJob(workspaceRoot, taskMetadata, write, worktreeInfo = null, id = null) {
+  const base = createCompanionJob({
     prefix: "task",
     kind: "task",
     title: taskMetadata.title,
     workspaceRoot,
     jobClass: "task",
     summary: taskMetadata.summary,
-    write
+    write,
+    id
   });
+
+  if (!worktreeInfo) {
+    return base;
+  }
+
+  return {
+    ...base,
+    worktreePath: worktreeInfo.worktreePath,
+    worktreeBranch: worktreeInfo.worktreeBranch,
+    worktreeBaseBranch: worktreeInfo.worktreeBaseBranch
+  };
 }
 
-function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId }) {
+function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId, worktreePath = null, worktreeBranch = null, worktreeBaseBranch = null }) {
   return {
     cwd,
     model,
@@ -618,7 +638,10 @@ function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId
     prompt,
     write,
     resumeLast,
-    jobId
+    jobId,
+    worktreePath,
+    worktreeBranch,
+    worktreeBaseBranch
   };
 }
 
@@ -690,7 +713,9 @@ function enqueueBackgroundTask(cwd, job, request) {
       summary: job.summary,
       logFile,
       jobsDir,
-      signalFile
+      signalFile,
+      worktreePath: job.worktreePath ?? null,
+      worktreeBranch: job.worktreeBranch ?? null
     },
     logFile
   };
@@ -749,7 +774,7 @@ async function handleReview(argv) {
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["model", "effort", "cwd", "prompt-file"],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
+    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "worktree"],
     aliasMap: {
       m: "model"
     }
@@ -763,8 +788,12 @@ async function handleTask(argv) {
 
   const resumeLast = Boolean(options["resume-last"] || options.resume);
   const fresh = Boolean(options.fresh);
+  const worktree = Boolean(options.worktree);
   if (resumeLast && fresh) {
     throw new Error("Choose either --resume/--resume-last or --fresh.");
+  }
+  if (worktree && resumeLast) {
+    throw new Error("Choose either --worktree or --resume/--resume-last.");
   }
   const write = Boolean(options.write);
   const taskMetadata = buildTaskRunMetadata({
@@ -772,11 +801,19 @@ async function handleTask(argv) {
     resumeLast
   });
 
+  // Create worktree if requested (before job creation so we have the path)
+  let worktreeInfo = null;
+  let preassignedJobId = null;
+  if (worktree) {
+    preassignedJobId = generateJobId("task");
+    worktreeInfo = createWorktree(workspaceRoot, preassignedJobId, prompt);
+  }
+
   if (options.background) {
     ensureCodexAvailable(cwd);
     requireTaskRequest(prompt, resumeLast);
 
-    const job = buildTaskJob(workspaceRoot, taskMetadata, write);
+    const job = buildTaskJob(workspaceRoot, taskMetadata, write, worktreeInfo, preassignedJobId);
     const request = buildTaskRequest({
       cwd,
       model,
@@ -784,14 +821,17 @@ async function handleTask(argv) {
       prompt,
       write,
       resumeLast,
-      jobId: job.id
+      jobId: job.id,
+      worktreePath: worktreeInfo?.worktreePath ?? null,
+      worktreeBranch: worktreeInfo?.worktreeBranch ?? null,
+      worktreeBaseBranch: worktreeInfo?.worktreeBaseBranch ?? null
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
     outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
     return;
   }
 
-  const job = buildTaskJob(workspaceRoot, taskMetadata, write);
+  const job = buildTaskJob(workspaceRoot, taskMetadata, write, worktreeInfo, preassignedJobId);
   await runForegroundCommand(
     job,
     (progress) =>
@@ -803,6 +843,9 @@ async function handleTask(argv) {
         write,
         resumeLast,
         jobId: job.id,
+        worktreePath: worktreeInfo?.worktreePath ?? null,
+        worktreeBranch: worktreeInfo?.worktreeBranch ?? null,
+        worktreeBaseBranch: worktreeInfo?.worktreeBaseBranch ?? null,
         onProgress: progress
       }),
     { json: options.json }
