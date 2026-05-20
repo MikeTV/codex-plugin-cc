@@ -64,3 +64,4 @@ Operating rules:
 - Leave `--resume` and `--fresh` in the forwarded request. The subagent handles that routing when it builds the `task` command.
 - If the helper reports that Codex is missing or unauthenticated, stop and tell the user to run `/codex:setup`.
 - If the user did not supply a request, ask what Codex should investigate or fix.
+- **Thread exclusivity**: While a Codex task is running, do not manually run `codex resume` on the same thread from a terminal. The Codex backend enforces single-turn exclusivity per thread, and attempting to resume an active thread will block or pause your CLI session. Wait for the task to complete (check `/codex:status`), or use `/codex:cancel` to stop the task first. If you need to run Codex in parallel, start a fresh thread with `codex` (without `--resume`).
