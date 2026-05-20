@@ -1,5 +1,7 @@
 # Codex plugin for Claude Code
 
+**[中文文档](README.zh-CN.md)**
+
 Use Codex from inside Claude Code for code reviews or to delegate tasks to Codex.
 
 This plugin is for Claude Code users who want an easy way to start using Codex from the workflow
@@ -137,7 +139,9 @@ Use it when you want Codex to:
 > [!NOTE]
 > Depending on the task and the model you choose these tasks might take a long time and it's generally recommended to force the task to be in the background or move the agent to the background.
 
-It supports `--background`, `--wait`, `--resume`, and `--fresh`. If you omit `--resume` and `--fresh`, the plugin can offer to continue the latest rescue thread for this repo.
+It supports `--background`, `--wait`, `--worktree`, `--resume`, and `--fresh`. If you omit `--resume` and `--fresh`, the plugin can offer to continue the latest rescue thread for this repo.
+
+**Sandbox mode.** Task mode reads `sandbox_mode` from your Codex config (`~/.codex/config.toml` or `.codex/config.toml`). If not configured, it falls back to `workspace-write` (when `--write` is set) or `read-only`.
 
 Examples:
 
@@ -148,6 +152,7 @@ Examples:
 /codex:rescue --model gpt-5.4-mini --effort medium investigate the flaky integration test
 /codex:rescue --model spark fix the issue quickly
 /codex:rescue --background investigate the regression
+/codex:rescue --worktree investigate and fix the failing integration test
 ```
 
 You can also just ask for a task to be delegated to Codex:
@@ -161,6 +166,10 @@ Ask Codex to redesign the database connection to be more resilient.
 - if you do not pass `--model` or `--effort`, Codex chooses its own defaults.
 - if you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`
 - follow-up rescue requests can continue the latest Codex task in the repo
+- `--worktree` creates an isolated git worktree under `.claude/worktrees/<jobId>/` on a dedicated branch so Codex can work without touching your main working directory. `--worktree` and `--resume` are mutually exclusive.
+
+> [!WARNING]
+> **Thread exclusivity**: While a Codex task is running, do not manually run `codex resume` on the same thread from a terminal. The Codex backend enforces single-turn exclusivity per thread, and attempting to resume an active thread will block or pause your CLI session. Wait for the task to complete (check `/codex:status`), or use `/codex:cancel` to stop the task first. If you need to run Codex in parallel, start a fresh thread with `codex` (without `--resume`).
 
 ### `/codex:status`
 
@@ -241,6 +250,14 @@ When the review gate is enabled, the plugin uses a `Stop` hook to run a targeted
 /codex:adversarial-review --background
 /codex:rescue --background investigate the flaky test
 ```
+
+### Isolated Work With `--worktree`
+
+```bash
+/codex:rescue --worktree fix the broken auth middleware
+```
+
+Codex works in `.claude/worktrees/<jobId>/` on a separate branch, leaving your main working directory untouched. This is useful when you want Codex to make changes without affecting your current branch.
 
 Then check in with:
 
