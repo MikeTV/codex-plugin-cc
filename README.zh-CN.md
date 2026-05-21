@@ -329,6 +329,32 @@ model_reasoning_effort = "high"
 
 这样你可以审查 Codex 的工作或在那里继续工作。
 
+## 开发
+
+### Pre-push Hook
+
+安装 git pre-push hook，在推送前验证发布质量：
+
+```bash
+npm run setup-hooks
+```
+
+Hook 在每次推送时检查：
+- **版本必须 bump** — 插件源码改了但没 bump 版本则阻止推送
+- **CHANGELOG 必须有对应条目** — 版本 bump 了但 CHANGELOG.md 没有匹配条目则阻止推送
+- **README 更新提醒** — 版本 bump 了但没更新 README.md 则警告（不阻止）
+- **Bump 类型校验** — 实际 bump 类型（major/minor/patch）与变更内容不匹配时警告
+
+需要跳过时可用 `git push --no-verify`。
+
+### 版本 Bump
+
+```bash
+node scripts/bump-version.mjs <version>
+```
+
+同步更新所有版本清单：`package.json`、`package-lock.json`、`plugin.json` 和 `marketplace.json`。
+
 ## 常见问题
 
 ### 使用此插件需要单独的 Codex 账号吗？

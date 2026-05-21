@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-05-20
+
+### Added
+
+- **Pre-push git hook** — validates CHANGELOG, version bump, and README consistency before pushing
+  - Blocks push if plugin source changed without version bump
+  - Blocks push if version bumped without matching CHANGELOG entry
+  - Warns if version bumped without README update
+  - Auto-detects suggested bump type (major / minor / patch) from changed files and commit messages
+  - Install: `npm run setup-hooks` | Bypass: `git push --no-verify`
+
+### Fixed
+
+- **Broker process leak** — stale broker processes were never killed, accumulating hundreds of orphans
+  - `ensureBrokerSession` now defaults `killProcess` to `terminateProcessTree` so stale brokers are actually terminated
+  - Broker auto-exits after 5 seconds of idle (no connected clients)
+- **marketplace.json version sync** — `.claude-plugin/marketplace.json` was accidentally gitignored, causing version to silently fall behind. Now properly tracked with `.claude-plugin/*` + `!.claude-plugin/marketplace.json` pattern
+
 ## [1.1.0] - 2026-05-20
 
 ### Added
@@ -54,5 +72,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added Chinese README (`README.zh-CN.md`)
 - Documented `--worktree` and sandbox_mode configuration
 
+[1.2.0]: https://github.com/dragon84867/codex-plugin-cc/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/dragon84867/codex-plugin-cc/compare/v1.0.4...v1.1.0
 [1.0.4]: https://github.com/dragon84867/codex-plugin-cc/compare/v1.0.3...v1.0.4

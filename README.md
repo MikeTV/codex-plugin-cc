@@ -333,6 +333,32 @@ Delegated tasks and any [stop gate](#what-does-the-review-gate-do) run can also 
 
 This way you can review the Codex work or continue the work there.
 
+## Development
+
+### Pre-push Hook
+
+Install the git pre-push hook to validate releases before pushing:
+
+```bash
+npm run setup-hooks
+```
+
+The hook checks every push for:
+- **Version bump required** — blocks if plugin source files changed without a version bump
+- **CHANGELOG entry required** — blocks if version was bumped but CHANGELOG.md has no matching entry
+- **README update warning** — warns if version was bumped without updating README.md
+- **Bump type validation** — warns if the actual bump (major/minor/patch) doesn't match what the changes suggest
+
+Bypass with `git push --no-verify` if needed.
+
+### Version Bumping
+
+```bash
+node scripts/bump-version.mjs <version>
+```
+
+Updates all version manifests: `package.json`, `package-lock.json`, `plugin.json`, and `marketplace.json`.
+
 ## FAQ
 
 ### Do I need a separate Codex account for this plugin?
