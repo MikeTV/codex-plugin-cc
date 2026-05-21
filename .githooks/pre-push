@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+#
+# Git pre-push hook
+# Validates CHANGELOG, version bump, and README consistency before pushing.
+#
+# Installed via: npm run setup-hooks
+# Bypass with:   git push --no-verify
+
+set -e
+
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$HOOK_DIR/.." && pwd)"
+
+exec node "$REPO_ROOT/scripts/pre-push-check.mjs"
