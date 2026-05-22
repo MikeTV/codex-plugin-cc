@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, beforeEach, afterEach } from "node:test";
@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 
 import { readEventsFromOffset, renderEvent } from "../plugins/codex/scripts/lib/observe.mjs";
 import { EVENT_TYPES } from "../plugins/codex/scripts/lib/event-stream.mjs";
+import { findJobByIdAcrossWorkspaces } from "../plugins/codex/scripts/lib/state.mjs";
 
 describe("readEventsFromOffset", () => {
   let tempDir;
@@ -146,5 +147,82 @@ describe("renderEvent", () => {
   it("returns empty string for empty message events", () => {
     const output = renderEvent({ type: EVENT_TYPES.MESSAGE, text: "" });
     assert.equal(output, "");
+  });
+});
+
+describe("findJobByIdAcrossWorkspaces", () => {
+  let pluginDataDir;
+  let previousPluginData;
+
+  beforeEach(() => {
+    pluginDataDir = mkdtempSync(join(tmpdir(), "observe-cross-ws-"));
+    previousPluginData = process.env.CLAUDE_PLUGIN_DATA;
+    process.env.CLAUDE_PLUGIN_DATA = pluginDataDir;
+  });
+
+  afterEach(() => {
+    if (previousPluginData === undefined) {
+      delete process.env.CLAUDE_PLUGIN_DATA;
+    } else {
+      process.env.CLAUDE_PLUGIN_DATA = previousPluginData;
+    }
+    rmSync(pluginDataDir, { recursive: true, force: true });
+  });
+
+  function writeWorkspaceState(slug, state) {
+    const dir = join(pluginDataDir, "state", slug);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "state.json"), `${JSON.stringify(state, null, 2)}\n`, "utf8");
+    return dir;
+  }
+
+  it("returns null when stateRoot does not exist", () => {
+    assert.equal(findJobByIdAcrossWorkspaces("task-abc"), null);
+  });
+
+  it("returns null for missing jobId", () => {
+    assert.equal(findJobByIdAcrossWorkspaces(""), null);
+    assert.equal(findJobByIdAcrossWorkspaces(null), null);
+  });
+
+  it("finds a job stored in a different workspace state file", () => {
+    const jobRecord = {
+      id: "task-mpgzdj45-hcr1o6",
+      status: "running",
+      eventFile: "/abs/path/events.jsonl"
+    };
+    const expectedDir = writeWorkspaceState("security-planck-7a3129dd96b457cb", {
+      version: 1,
+      jobs: [jobRecord]
+    });
+
+    const result = findJobByIdAcrossWorkspaces("task-mpgzdj45-hcr1o6");
+    assert.ok(result, "expected cross-workspace match");
+    assert.equal(result.stateDir, expectedDir);
+    assert.equal(result.job.id, "task-mpgzdj45-hcr1o6");
+    assert.equal(result.job.eventFile, "/abs/path/events.jsonl");
+  });
+
+  it("returns null when no workspace contains the jobId", () => {
+    writeWorkspaceState("other-1234567890abcdef", {
+      version: 1,
+      jobs: [{ id: "task-other", status: "completed" }]
+    });
+    assert.equal(findJobByIdAcrossWorkspaces("task-missing"), null);
+  });
+
+  it("skips corrupted state.json files instead of throwing", () => {
+    const corruptedDir = join(pluginDataDir, "state", "corrupt-aaaaaaaaaaaaaaaa");
+    mkdirSync(corruptedDir, { recursive: true });
+    writeFileSync(join(corruptedDir, "state.json"), "{not valid json", "utf8");
+
+    writeWorkspaceState("good-bbbbbbbbbbbbbbbb", {
+      version: 1,
+      jobs: [{ id: "task-good", status: "completed" }]
+    });
+
+    const result = findJobByIdAcrossWorkspaces("task-good");
+    assert.ok(result);
+    assert.equal(result.job.id, "task-good");
   });
 });

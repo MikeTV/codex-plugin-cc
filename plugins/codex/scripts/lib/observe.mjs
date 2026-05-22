@@ -2,7 +2,7 @@ import fs from "node:fs";
 
 import { parseArgs } from "./args.mjs";
 import { EVENT_TYPES } from "./event-stream.mjs";
-import { loadState, resolveJobsDir } from "./state.mjs";
+import { findJobByIdAcrossWorkspaces, loadState, resolveJobsDir } from "./state.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 
 const POLL_INTERVAL_MS = 500;
@@ -289,12 +289,18 @@ export async function handleObserveCommand(argv) {
   const state = loadState(workspaceRoot);
 
   let job;
+  let crossWorkspaceMatch = null;
   if (jobId) {
     job = findJobById(state, jobId);
     if (!job) {
-      process.stderr.write(`Error: Job not found: ${jobId}\n`);
-      process.exitCode = 1;
-      return;
+      crossWorkspaceMatch = findJobByIdAcrossWorkspaces(jobId);
+      if (crossWorkspaceMatch) {
+        job = crossWorkspaceMatch.job;
+      } else {
+        process.stderr.write(`Error: Job not found: ${jobId}\n`);
+        process.exitCode = 1;
+        return;
+      }
     }
   } else {
     job = findLatestRunningJob(state);
@@ -310,7 +316,11 @@ export async function handleObserveCommand(argv) {
 
   // Print header
   const statusColor = isCompleted ? (job.status === "completed" ? ANSI.green : ANSI.red) : ANSI.yellow;
-  process.stdout.write(`${ANSI.dim}Codex Observer — ${job.id} — ${statusColor}${job.status}${ANSI.reset}\n\n`);
+  process.stdout.write(`${ANSI.dim}Codex Observer — ${job.id} — ${statusColor}${job.status}${ANSI.reset}\n`);
+  if (crossWorkspaceMatch) {
+    process.stdout.write(`${ANSI.dim}(job belongs to another workspace; reading from ${crossWorkspaceMatch.stateDir})${ANSI.reset}\n`);
+  }
+  process.stdout.write("\n");
 
   if (isCompleted) {
     // Render full history and exit
