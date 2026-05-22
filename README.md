@@ -181,6 +181,7 @@ Examples:
 ```bash
 /codex:status
 /codex:status task-abc123
+/codex:status --all
 ```
 
 Use it to:
@@ -188,6 +189,8 @@ Use it to:
 - check progress on background work
 - see the latest completed job
 - confirm whether a task is still running
+
+`--all` widens the listing to include jobs created in other Claude Code sessions and in legacy state directories (e.g., earlier plugin slugs, `$TMPDIR/codex-companion/`). Use it to recover the id of a task you started in an earlier session — by id, every other slash command (`/codex:result`, `/codex:cancel`, `/codex:observe`) already works across sessions and roots.
 
 ### `/codex:result`
 
@@ -386,3 +389,14 @@ Yes. If you already use Codex, the plugin picks up the same [configuration](#com
 Yes. Because the plugin uses your local Codex CLI, your existing sign-in method and config still apply.
 
 If you need to point the built-in OpenAI provider at a different endpoint, set `openai_base_url` in your [Codex config](https://developers.openai.com/codex/config-advanced/#config-and-state-locations).
+
+### Where is my job state stored?
+
+Job records, logs, and event streams live under a per-workspace state directory. The plugin picks the root in this order:
+
+1. `$CLAUDE_PLUGIN_DATA/state/` — set by Claude Code when the slash command runs through the plugin host. Honored when present.
+2. `~/.codex-companion/state/` — stable HOME-anchored fallback. Used when the env var is not set (e.g., running `node codex-companion.mjs` directly from a shell).
+
+Inside that root, each workspace gets `<basename>-<sha256(realpath)[:16]>/` (slug + hash of the canonical workspace path), with `state.json`, per-job `<job>.json`, `<job>.log`, and `<job>.events.jsonl` files.
+
+When you look up a job by id (`/codex:status <id>`, `/codex:result <id>`, `/codex:cancel <id>`, `/codex:observe <id>`), the plugin also scans legacy locations — `$TMPDIR/codex-companion/` (older fallback) and every `~/.claude/plugins/data/codex-*/state/` directory (handles marketplace plugin renames) — so jobs created before an upgrade remain findable. `/codex:status --all` extends the same multi-root view to the no-arg listing and bypasses the per-Claude-session filter, which is the recommended way to recover the id of a task started in an earlier session. The advanced env knob `CODEX_COMPANION_LEGACY_ROOTS` (path-separated) lets you replace the legacy scan list explicitly; an empty value disables legacy scanning entirely. Real users should not need to touch it.

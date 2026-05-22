@@ -179,6 +179,7 @@ Ask Codex to redesign the database connection to be more resilient.
 ```bash
 /codex:status
 /codex:status task-abc123
+/codex:status --all
 ```
 
 用途：
@@ -186,6 +187,8 @@ Ask Codex to redesign the database connection to be more resilient.
 - 查看后台任务的进度
 - 查看最近完成的作业
 - 确认任务是否仍在运行
+
+`--all` 会把列表扩展到其他 Claude Code 会话以及历史 state 目录里的作业（例如旧 plugin slug、`$TMPDIR/codex-companion/`）。如果你在新会话里需要找回旧会话启动的任务 id，用这个；其它带 id 的 slash command（`/codex:result`、`/codex:cancel`、`/codex:observe`）已经默认跨会话、跨 root。
 
 ### `/codex:result`
 
@@ -382,3 +385,14 @@ node scripts/bump-version.mjs <version>
 可以。由于插件使用你本地的 Codex CLI，你现有的登录方式和配置都会继续生效。
 
 如果你需要将内置的 OpenAI Provider 指向不同的端点，请在 [Codex 配置](https://developers.openai.com/codex/config-advanced/#config-and-state-locations)中设置 `openai_base_url`。
+
+### 作业的 state 存在哪里？
+
+Job 记录、日志和事件流按 workspace 写入 state 目录。插件按下面顺序选根目录：
+
+1. `$CLAUDE_PLUGIN_DATA/state/` —— Claude Code 通过 plugin host 调起 slash command 时会设置这个 env，存在时优先使用。
+2. `~/.codex-companion/state/` —— HOME 锚定的稳定 fallback。env 未设置时（例如直接在 shell 里跑 `node codex-companion.mjs`）走这里。
+
+每个 workspace 会在 root 下生成 `<basename>-<sha256(realpath)[:16]>/`（slug + 规范化路径哈希）目录，存 `state.json`、`<job>.json`、`<job>.log` 和 `<job>.events.jsonl`。
+
+当你用 id 查作业（`/codex:status <id>`、`/codex:result <id>`、`/codex:cancel <id>`、`/codex:observe <id>`），插件还会顺带扫描历史位置：`$TMPDIR/codex-companion/`（更早的 fallback）以及所有 `~/.claude/plugins/data/codex-*/state/` 目录（兼容 marketplace 改名），所以升级前创建的旧 job 仍能找到。`/codex:status --all` 把这个跨 root 的视图扩展到无参数列表，并跳过 per-Claude-session 过滤 —— 这是新会话里捞回旧任务 id 的推荐方式。高级 env 开关 `CODEX_COMPANION_LEGACY_ROOTS`（路径分隔符隔开）可以显式替换历史扫描列表；设为空字符串则完全关闭历史扫描。普通用户不需要碰它。
