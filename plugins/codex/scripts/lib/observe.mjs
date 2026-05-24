@@ -1,9 +1,13 @@
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { parseArgs } from "./args.mjs";
 import { EVENT_TYPES } from "./event-stream.mjs";
+import { shellQuote, spawnObserverInTerminal } from "./spawner.mjs";
 import { findJobByIdAcrossWorkspaces, loadState, resolveJobsDir } from "./state.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
+
+const COMPANION_SCRIPT = fileURLToPath(new URL("../codex-companion.mjs", import.meta.url));
 
 const POLL_INTERVAL_MS = 500;
 const WATCH_DEBOUNCE_MS = 100;
@@ -271,10 +275,47 @@ export function tailEventStream(eventFile, onEvent) {
   return { stop, onStop, isStopped: () => stopped };
 }
 
+function buildObserverCommand({ positionals, options }) {
+  const observerArgs = ["observe", ...positionals];
+  if (options.cwd) {
+    observerArgs.push("--cwd", options.cwd);
+  }
+  return [process.execPath, COMPANION_SCRIPT, ...observerArgs].map(shellQuote).join(" ");
+}
+
+function renderFallbackHint({ workspaceRoot, command }) {
+  return [
+    `${ANSI.dim}Not running inside a supported terminal multiplexer (tmux).${ANSI.reset}`,
+    "",
+    "Open a new terminal window and run:",
+    "",
+    `  cd ${workspaceRoot}`,
+    `  ${command}`,
+    ""
+  ].join("\n");
+}
+
+async function handleObserveSpawn({ positionals, options, workspaceRoot }) {
+  const command = buildObserverCommand({ positionals, options });
+  const result = spawnObserverInTerminal({ cwd: workspaceRoot, command });
+
+  if (result.spawned && result.kind === "tmux") {
+    const target = positionals[0] ? `job ${positionals[0]}` : "latest running job";
+    process.stdout.write(`${ANSI.green}✓ Observer launched in new tmux pane${ANSI.reset} (${target})\n`);
+    return;
+  }
+
+  if (result.kind === "tmux" && result.error) {
+    process.stdout.write(`${ANSI.red}✗ Failed to open tmux pane: ${result.error}${ANSI.reset}\n\n`);
+  }
+
+  process.stdout.write(renderFallbackHint({ workspaceRoot, command }));
+}
+
 export async function handleObserveCommand(argv) {
   const { options, positionals } = parseArgs(argv, {
     valueOptions: ["cwd"],
-    booleanOptions: ["json"]
+    booleanOptions: ["json", "spawn"]
   });
 
   const cwd = options.cwd ?? process.cwd();
@@ -283,6 +324,11 @@ export async function handleObserveCommand(argv) {
     workspaceRoot = resolveWorkspaceRoot(cwd);
   } catch {
     workspaceRoot = cwd;
+  }
+
+  if (options.spawn) {
+    await handleObserveSpawn({ positionals, options, workspaceRoot });
+    return;
   }
 
   const jobId = positionals[0] ?? null;

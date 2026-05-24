@@ -1,36 +1,16 @@
 ---
-description: Observe a Codex job's live event stream in real-time (read-only)
+description: Launch a live observer for a Codex job — opens a tmux split when available
 argument-hint: '[job-id] [--cwd <path>]'
-disable-model-invocation: true
 allowed-tools: Bash(node:*)
 ---
 
-To observe a Codex job's live output, open a **new terminal window** and run:
+!`node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" observe --spawn $ARGUMENTS`
 
-```bash
-cd <your-project-directory>
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" observe $ARGUMENTS
-```
+Present the command output to the user verbatim. Do not add summary or commentary.
 
-**What you'll see:**
-- Real-time event stream with ANSI colors (tool calls, file changes, commands, messages)
-- Phase indicators showing Codex's progress (starting → investigating → finalizing → completed)
-- Live updates as events happen
+**Behavior**
 
-**Controls:**
-- `Ctrl+C` to exit the observer (Codex task continues running)
-- Observer exits automatically when the task completes
+- Inside tmux: opens a new vertical split (`split-window -h`) running the live observer for the requested (or latest running) Codex job.
+- Outside tmux: prints the exact command for the user to paste into a separate terminal window.
 
-**Examples:**
-```bash
-# Observe the latest running job
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" observe
-
-# Observe a specific job
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" observe task-abc123
-
-# Observe with custom workspace
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" observe --cwd /path/to/project
-```
-
-**Note:** This command is designed to be run in a separate terminal for live observation. The slash command here shows you the exact command to copy-paste into your new terminal window.
+The observer shows real-time phase indicators, tool calls, command output, and file changes with ANSI colors. It exits automatically when the task completes, or with `Ctrl+C` (Codex task continues running).

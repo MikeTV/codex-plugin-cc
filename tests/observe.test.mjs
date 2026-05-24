@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { readEventsFromOffset, renderEvent } from "../plugins/codex/scripts/lib/observe.mjs";
+import { handleObserveCommand, readEventsFromOffset, renderEvent } from "../plugins/codex/scripts/lib/observe.mjs";
 import { EVENT_TYPES } from "../plugins/codex/scripts/lib/event-stream.mjs";
 import { findJobByIdAcrossWorkspaces } from "../plugins/codex/scripts/lib/state.mjs";
 
@@ -224,5 +224,47 @@ describe("findJobByIdAcrossWorkspaces", () => {
     const result = findJobByIdAcrossWorkspaces("task-good");
     assert.ok(result);
     assert.equal(result.job.id, "task-good");
+  });
+});
+
+describe("handleObserveCommand --spawn", () => {
+  let tempDir;
+  let originalTmux;
+  let originalWrite;
+  let captured;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "observe-spawn-"));
+    originalTmux = process.env.TMUX;
+    delete process.env.TMUX;
+    originalWrite = process.stdout.write.bind(process.stdout);
+    captured = "";
+    process.stdout.write = (chunk) => {
+      captured += String(chunk);
+      return true;
+    };
+  });
+
+  afterEach(() => {
+    process.stdout.write = originalWrite;
+    if (originalTmux === undefined) {
+      delete process.env.TMUX;
+    } else {
+      process.env.TMUX = originalTmux;
+    }
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("prints fallback hint when not inside tmux", async () => {
+    await handleObserveCommand(["--spawn", "--cwd", tempDir, "task-abc"]);
+    assert.match(captured, /Not running inside.*tmux/);
+    assert.match(captured, /Open a new terminal/);
+    assert.match(captured, /codex-companion\.mjs/);
+    assert.match(captured, /observe.*task-abc/);
+  });
+
+  it("includes the workspace cwd in the fallback hint", async () => {
+    await handleObserveCommand(["--spawn", "--cwd", tempDir]);
+    assert.ok(captured.includes(`cd ${tempDir}`));
   });
 });
