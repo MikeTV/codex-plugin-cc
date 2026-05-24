@@ -285,7 +285,7 @@ function buildObserverCommand({ positionals, options }) {
 
 function renderFallbackHint({ workspaceRoot, command }) {
   return [
-    `${ANSI.dim}Not running inside a supported terminal multiplexer (tmux).${ANSI.reset}`,
+    `${ANSI.dim}Not running inside a supported terminal (tmux, Ghostty on macOS, or iTerm2 on macOS).${ANSI.reset}`,
     "",
     "Open a new terminal window and run:",
     "",
@@ -295,18 +295,44 @@ function renderFallbackHint({ workspaceRoot, command }) {
   ].join("\n");
 }
 
-async function handleObserveSpawn({ positionals, options, workspaceRoot }) {
-  const command = buildObserverCommand({ positionals, options });
-  const result = spawnObserverInTerminal({ cwd: workspaceRoot, command });
+const SPAWN_SUCCESS_LABELS = {
+  tmux: "tmux pane",
+  "ghostty-mac": "Ghostty split or new window",
+  "iterm2-mac": "iTerm2 split or new window"
+};
 
-  if (result.spawned && result.kind === "tmux") {
+const AUTOMATION_APP_LABELS = {
+  "ghostty-mac": "Ghostty",
+  "iterm2-mac": "iTerm2"
+};
+
+export async function handleObserveSpawn({
+  positionals,
+  options,
+  workspaceRoot,
+  spawner = spawnObserverInTerminal
+}) {
+  const command = buildObserverCommand({ positionals, options });
+  const result = spawner({ cwd: workspaceRoot, command });
+
+  if (result.spawned) {
     const target = positionals[0] ? `job ${positionals[0]}` : "latest running job";
-    process.stdout.write(`${ANSI.green}✓ Observer launched in new tmux pane${ANSI.reset} (${target})\n`);
+    const label = SPAWN_SUCCESS_LABELS[result.kind] ?? result.kind;
+    process.stdout.write(`${ANSI.green}✓ Observer launched in ${label}${ANSI.reset} (${target})\n`);
     return;
   }
 
-  if (result.kind === "tmux" && result.error) {
-    process.stdout.write(`${ANSI.red}✗ Failed to open tmux pane: ${result.error}${ANSI.reset}\n\n`);
+  if (result.reason === "automation-permission-denied") {
+    const app = AUTOMATION_APP_LABELS[result.kind] ?? result.kind;
+    process.stdout.write(`! macOS Automation permission needed for ${app}. Open System Settings → Privacy & Security → Automation, enable ${app}, then rerun /codex:observe.\n`);
+    return;
+  }
+
+  if (result.reason === "unsafe-command") {
+    process.stdout.write(`${ANSI.red}✗ Refusing to spawn: composed command contains a control character (${result.error}). Run the command manually:${ANSI.reset}\n\n`);
+  } else if (result.error) {
+    const label = SPAWN_SUCCESS_LABELS[result.kind] ?? result.kind;
+    process.stdout.write(`${ANSI.red}✗ Failed to open ${label}: ${result.error}${ANSI.reset}\n\n`);
   }
 
   process.stdout.write(renderFallbackHint({ workspaceRoot, command }));

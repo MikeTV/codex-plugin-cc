@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { handleObserveCommand, readEventsFromOffset, renderEvent } from "../plugins/codex/scripts/lib/observe.mjs";
+import { handleObserveCommand, handleObserveSpawn, readEventsFromOffset, renderEvent } from "../plugins/codex/scripts/lib/observe.mjs";
 import { EVENT_TYPES } from "../plugins/codex/scripts/lib/event-stream.mjs";
 import { findJobByIdAcrossWorkspaces } from "../plugins/codex/scripts/lib/state.mjs";
 
@@ -266,5 +266,23 @@ describe("handleObserveCommand --spawn", () => {
   it("includes the workspace cwd in the fallback hint", async () => {
     await handleObserveCommand(["--spawn", "--cwd", tempDir]);
     assert.ok(captured.includes(`cd ${tempDir}`));
+  });
+
+  it("prints Automation permission message without copy-paste fallback", async () => {
+    await handleObserveSpawn({
+      positionals: ["task-abc"],
+      options: { cwd: tempDir },
+      workspaceRoot: tempDir,
+      spawner: () => ({
+        spawned: false,
+        kind: "ghostty-mac",
+        reason: "automation-permission-denied",
+        error: "Automation permission needed for Ghostty"
+      })
+    });
+
+    assert.match(captured, /Automation permission needed/);
+    assert.match(captured, /Ghostty/);
+    assert.doesNotMatch(captured, /Open a new terminal/);
   });
 });
