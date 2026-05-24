@@ -42,19 +42,34 @@ Alternative considered: prefer host emulator if both signals are present, becaus
 
 The osascript backends end up running a shell command (`cd <cwd> && <command>`) in a freshly opened pane / window. There are *two* separate quoting domains: (a) POSIX shell parses the `cd ... && ...` string, and (b) AppleScript parses the surrounding `"..."` literal. They have different metacharacters; collapsing them into a single escape pass is what Codex flagged as unsafe.
 
-**Layer 1 — shell quoting.** Use the existing `shellQuote(value)` helper to wrap both `cwd` and `command` in single quotes (escaping any internal `'` as `'\''`). This is what tmux already does for the command it forwards; we reuse the same primitive. Concretely the composed string is:
+**Pipeline (exact order, no exceptions):**
 
 ```
-cd 'PATH/with spaces/and \'\'quotes\'\'' && '/abs/path/node' '/abs/path/companion.mjs' 'observe' 'task-abc'
+composeShellInvocation({ cwd, command })   ── Layer 1: shell-safe
+        │
+        ▼
+rejectControlChars(<composed>)             ── Guard: reject 0x00–0x1F minus 0x09/0x20
+        │  (return spawned:false, reason:'unsafe-command' on hit)
+        ▼
+escapeAppleScriptLiteral(<composed>)       ── Layer 2: AppleScript-safe
+        │
+        ▼
+buildGhosttyMacArgs / buildIterm2MacArgs   ── interpolate into osascript -e ...
 ```
 
-`command` is already a space-joined sequence of `shellQuote`d tokens (built by `buildObserverCommand` in `observe.mjs`), so this layer only adds quoting around `cwd` and the `cd` prefix.
+**Layer 1 — `composeShellInvocation({ cwd, command })`.** Returns exactly `cd ${shellQuote(cwd)} && ${command}`. Only `cwd` is shell-quoted at this layer; `command` is interpolated verbatim because it is **already** a space-joined sequence of individually `shellQuote`-ed argv tokens, produced by `buildObserverCommand` in `observe.mjs`. Re-wrapping `command` with `shellQuote` here would collapse the four argv tokens into a single literal string and break execution — a regression scenario in the spec asserts the token preservation.
 
-**Layer 2 — AppleScript escaping.** Take the resulting shell string and escape `\` → `\\` and `"` → `\"`, then interpolate into `input text "<escaped>\n" to newTerm` (or iTerm2's `write text "..."`).
+Concretely:
 
-**Control-char guard.** Before either layer runs, the builder rejects strings containing `\n`, `\r`, `\0`, or other ASCII control bytes (0x00–0x1F except tab/space). These can't be reliably quoted into a single `input text` line — `\n` would inject a premature `enter` into the pane, `\0` truncates C-strings. On rejection the spawner returns `{ spawned: false, kind: <backend>, error: 'unsafe-command: <reason>' }`, and the caller falls back to the copy-paste hint.
+```
+cd '/Users/dragon.cl/work projects/codex-plugin-cc' && '/abs/path/node' '/abs/path/companion.mjs' 'observe' 'task-abc'
+```
 
-Alternative considered: pass the command as an `osascript` positional argument and read it inside the script via `do shell script "echo " & quoted form of argv...`. Rejected — adds a third escaping layer (osascript's own argv handling) without removing either of the two above. Direct interpolation with explicit named layers is auditable.
+**Guard — `rejectControlChars(composed)`.** Runs on the composed string (after Layer 1, before Layer 2) so that control bytes embedded in `cwd` — which are only visible *after* shell quoting wraps them inside a single-quoted literal — are caught before they reach `input text` / `write text`. Scanning the raw `cwd` or raw `command` separately would miss the position-in-final-string information and risk subtle gaps. On any hit, the spawner returns `{ spawned: false, kind: <backend>, reason: 'unsafe-command', error: <message naming the byte and the location> }` and the runner is not invoked.
+
+**Layer 2 — `escapeAppleScriptLiteral(composed)`.** Doubles `\` → `\\` and `"` → `\"` in the composed string, then the backend interpolates it into `input text "<escaped>\n" to newTerm` (Ghostty) or `write text "<escaped>" to newSession` (iTerm2, no trailing `\n` since iTerm2 adds Enter on `write text`).
+
+Alternative considered: pass the command as an `osascript` positional argument and read it inside the script via `do shell script "echo " & quoted form of argv...`. Rejected — adds a third escaping layer (osascript's own argv handling) without removing either of the two above. Direct interpolation with explicit named layers + pipeline ordering is auditable.
 
 ### 4. One `-e` per logical AppleScript line
 

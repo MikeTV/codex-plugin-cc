@@ -108,7 +108,14 @@ Backends that build AppleScript snippets SHALL escape backslash and double-quote
 
 ### Requirement: Shell-safe composition of cwd and command
 
-Before the AppleScript escape layer runs, both `cwd` and `command` SHALL be shell-quoted (single-quote escaping, doubling internal `'` as `'\''`) and composed into a `cd <quoted-cwd> && <command>` string. The composed string SHALL be parseable by a POSIX shell when passed via `input text` / `write text`.
+The spawner SHALL produce the final shell invocation via a single `composeShellInvocation({ cwd, command })` helper that returns exactly `cd ${shellQuote(cwd)} && ${command}` — `cwd` is shell-quoted *here* (single-quote escaping, doubling internal `'` as `'\''`), and `command` MUST be the output of `buildObserverCommand` in `observe.mjs`, which is a space-joined sequence of already-individually-shell-quoted argv tokens. `command` MUST NOT be re-quoted by this layer; doing so would collapse the argv tokens into a single literal string and break execution.
+
+The two quoting layers MUST run in this exact order, with no intervening transformation:
+
+1. `composeShellInvocation({ cwd, command })` — shell-safe composition (Layer 1).
+2. `escapeAppleScriptLiteral(<step-1 result>)` — AppleScript-literal-safe (Layer 2).
+
+The control-character guard (separate requirement below) runs *between* Layers 1 and 2.
 
 #### Scenario: cwd contains spaces
 
@@ -129,6 +136,21 @@ Before the AppleScript escape layer runs, both `cwd` and `command` SHALL be shel
 
 - **WHEN** `cwd` is `/Users/田中/プロジェクト`
 - **THEN** the composed string contains the original unicode bytes verbatim inside the single-quoted literal
+
+#### Scenario: command argv tokens are preserved as separate tokens
+
+- **WHEN** `command` is `'/abs/node' '/abs/companion.mjs' 'observe' 'task-abc'` (four already-shell-quoted argv tokens as produced by `buildObserverCommand`)
+- **THEN** the composed string ends with ` && '/abs/node' '/abs/companion.mjs' 'observe' 'task-abc'` — the four tokens are preserved verbatim with their original single quotes, NOT re-quoted into a single literal
+
+#### Scenario: command containing apparent shell metacharacters in a quoted token is unchanged
+
+- **WHEN** `command` is `'/abs/node' '/abs/companion.mjs' 'observe' 'task with$weird;chars'`
+- **THEN** the composed string ends with that exact string verbatim — the spawner does NOT add another layer of `shellQuote` around `command`
+
+#### Scenario: layer order — composeShellInvocation runs before escapeAppleScriptLiteral
+
+- **WHEN** the spawner builds an osascript backend's argv
+- **THEN** the input to `escapeAppleScriptLiteral` is exactly the output of `composeShellInvocation` — there is no path that escapes raw `cwd` or raw `command` for AppleScript before shell composition has produced the final invocation
 
 ### Requirement: Caller-terminal targeting with new-window fallback
 
@@ -154,24 +176,34 @@ The osascript backends SHALL discover the caller shell's controlling tty (walkin
 - **WHEN** process-ancestry discovery returns no tty (e.g., sandboxed shell, `ps` unavailable)
 - **THEN** the spawner builds AppleScript that goes directly to the new-window branch with no split attempt
 
-### Requirement: Reject control characters before building AppleScript
+### Requirement: Reject control characters in the composed shell invocation
 
-Before any AppleScript or shell composition runs, the spawner SHALL reject composed-command strings that contain ASCII control bytes (`0x00`–`0x1F`) other than `0x09` (tab) and `0x20` (space). On rejection the spawner SHALL return `{ spawned: false, kind: <detected-kind>, reason: 'unsafe-command', error: <human-readable-message naming the offending byte category> }` and the runner MUST NOT be invoked.
+After `composeShellInvocation({ cwd, command })` has produced the final `cd <quoted-cwd> && <command>` string and BEFORE `escapeAppleScriptLiteral` runs, the spawner SHALL scan that exact composed string for ASCII control bytes in the range `0x00`–`0x1F` other than `0x09` (tab) and `0x20` (space). On any hit, the spawner SHALL return `{ spawned: false, kind: <detected-kind>, reason: 'unsafe-command', error: <human-readable-message naming the offending byte and where in the composed string it appeared> }` and MUST NOT invoke the runner or proceed to AppleScript escaping. Scanning the composed string (not the raw `cwd` or raw `command` in isolation) is mandatory so that control bytes embedded in `cwd` are caught before they reach `input text` / `write text`.
 
-#### Scenario: composed command contains a newline
+#### Scenario: cwd contains an embedded newline
 
-- **WHEN** the composed `cd ... && <command>` string contains `\n`
+- **WHEN** `cwd` is `/tmp/foo\nbar` (literal newline in the path) and `command` is well-formed
+- **THEN** `composeShellInvocation` produces a composed string whose single-quoted cwd literal contains `\n`, the control-char scan detects it, the spawner returns `{ spawned: false, kind: <detected-kind>, reason: 'unsafe-command', error: <string mentioning embedded newline and the cwd location> }`, and the runner is not called
+
+#### Scenario: command contains an embedded newline
+
+- **WHEN** the composed shell invocation contains `\n` originating from `command`
 - **THEN** the spawner returns `{ spawned: false, kind: <detected-kind>, reason: 'unsafe-command', error: <string mentioning embedded newline> }` and the runner is not called
 
-#### Scenario: composed command contains a NUL byte
+#### Scenario: composed string contains a NUL byte
 
-- **WHEN** the composed string contains `\0`
+- **WHEN** the composed string contains `\0` (from either `cwd` or `command`)
 - **THEN** the spawner returns `{ spawned: false, kind: <detected-kind>, reason: 'unsafe-command', error: <string mentioning NUL> }` and the runner is not called
 
-#### Scenario: composed command contains a carriage return
+#### Scenario: composed string contains a carriage return
 
-- **WHEN** the composed string contains `\r`
+- **WHEN** the composed string contains `\r` (from either `cwd` or `command`)
 - **THEN** the spawner returns `{ spawned: false, kind: <detected-kind>, reason: 'unsafe-command', error: <string mentioning embedded control character> }` and the runner is not called
+
+#### Scenario: tab and space are allowed
+
+- **WHEN** the composed string contains `\t` (0x09) or `\x20` (space)
+- **THEN** the scan does NOT trigger; the spawner proceeds to `escapeAppleScriptLiteral` and the runner is invoked normally
 
 ### Requirement: Automation-permission-denied messaging
 

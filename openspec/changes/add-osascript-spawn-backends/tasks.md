@@ -10,8 +10,8 @@
 - [ ] 1.2 Add a `Detection precedence` describe block asserting that `tmux` wins when both `$TMUX` and `$TERM_PROGRAM=ghostty` (or `iTerm.app`) are set.
 - [ ] 1.3 Add `spawnObserverInTerminal` cases for the new backends using the existing injected-runner pattern: assert `cmd === 'osascript'` and inspect the `-e` arg sequence for the required AppleScript verbs (`tell application "Ghostty"` / `tell application "iTerm"`, the `repeat with` loop comparing `tty of`, the `split` and `new window` / `create window` branches, `input text` / `write text` carrying the composed command).
 - [ ] 1.4 Add escape tests asserting that `"` in the composed shell command becomes `\"` and `\` becomes `\\` in the AppleScript literal.
-- [ ] 1.5 Add **shell-quoting** tests for the new `composeShellInvocation({ cwd, command })` helper: cwd containing spaces → wrapped in `'...'`; cwd containing a single quote → escaped as `'\''`; cwd containing `;`/`$`/space → metacharacters appear inside the quoted literal with no shell effect; cwd containing unicode → bytes preserved verbatim.
-- [ ] 1.6 Add **control-char rejection** tests: composed command containing `\n`, `\r`, or `\0` → `spawnObserverInTerminal` returns `{ spawned: false, kind, reason: 'unsafe-command', error }` and the injected runner is NOT called.
+- [ ] 1.5 Add **shell-quoting** tests for the new `composeShellInvocation({ cwd, command })` helper: cwd containing spaces → wrapped in `'...'`; cwd containing a single quote → escaped as `'\''`; cwd containing `;`/`$`/space → metacharacters appear inside the quoted literal with no shell effect; cwd containing unicode → bytes preserved verbatim. Add **command-token preservation** tests: when `command` is a four-token pre-quoted string like `'/abs/node' '/abs/companion.mjs' 'observe' 'task-abc'`, the composed output ends with that string byte-for-byte (i.e. the helper does NOT call `shellQuote(command)` again). Add a **layer-order** test asserting that the input to `escapeAppleScriptLiteral` (call it via spy or via inspecting backend builder output) equals `composeShellInvocation`'s output exactly.
+- [ ] 1.6 Add **control-char rejection** tests: cwd containing `\n` → `spawnObserverInTerminal` returns `{ spawned: false, kind, reason: 'unsafe-command', error }` mentioning newline AND a cwd location; cwd containing `\0` → same shape mentioning NUL; command containing `\r` → same shape; cwd or command containing `\t` (0x09) or `\x20` (space) → guard does NOT trigger and runner IS invoked. For every rejection case assert the injected runner is NOT called.
 - [ ] 1.7 Add **tty-match dispatch** tests: stub the tty-discovery helper to return a known `/dev/ttysNN`, then assert the produced AppleScript embeds that tty inside the `repeat` loop's comparison. Add a second test where the discovery helper returns `null` → assert the produced AppleScript goes straight to the `new window` branch (no `repeat`/`split`).
 - [ ] 1.8 Add **permission-denied** tests: stub the runner to return `{ status: 1, stderr: '(-1743) Not authorized to send Apple events to ...' }` → assert `{ spawned: false, kind, reason: 'automation-permission-denied', error }`. Repeat with the lowercase phrase variant.
 - [ ] 1.9 Extend `tests/observe.test.mjs` wiring tests with a `handleObserveSpawn` case that injects a fake spawner returning `{ spawned: false, reason: 'automation-permission-denied' }` and asserts the printed output contains "Automation permission needed" and does NOT contain the copy-paste fallback hint.
@@ -19,9 +19,9 @@
 
 ## 2. Refactor spawner.mjs to a strategy table
 
-- [ ] 2.1 Introduce a backends table with three entries (`tmux`, `ghostty-mac`, `iterm2-mac`), each `{ detect(env), build({ cwd, command, callerTty }), cmd, classifyFailure(result) }`. Order entries in priority sequence (tmux first).
+- [ ] 2.1 Introduce a backends table with three entries (`tmux`, `ghostty-mac`, `iterm2-mac`), each `{ detect(env), build(buildInput), cmd, classifyFailure(result) }`. Order entries in priority sequence (tmux first). The `buildInput` shape differs per backend kind: tmux receives `{ cwd, command }` (no shell composition — tmux takes `-c <cwd>` as a separate arg), osascript backends receive `{ composed, callerTty }` (already-composed shell string + discovered tty, see §2.3).
 - [ ] 2.2 Rewrite `detectTerminal(env)` to walk the table and return the first hit, falling back to `{ kind: 'none' }`. Keep the current return shape (`{ kind }`).
-- [ ] 2.3 Rewrite `spawnObserverInTerminal({ cwd, command, env, runner })` to: (a) early-return `{ spawned: false, kind: 'none' }` when no backend matches; (b) run the control-char guard on the composed shell invocation (see §3.1) — early-return `unsafe-command` on hit; (c) discover `callerTty` (see §3.2) — `null` is fine; (d) call `runner(backend.cmd, backend.build({ cwd, command, callerTty }), { stdio: ['ignore', 'ignore', 'pipe'] })` (note: stderr captured for classification); (e) on non-zero status, ask `backend.classifyFailure({ status, stderr, error })` → may return `automation-permission-denied` or a generic error string.
+- [ ] 2.3 Rewrite `spawnObserverInTerminal({ cwd, command, env, runner })` to follow the design's pipeline order exactly: (a) detect — early-return `{ spawned: false, kind: 'none' }` when no backend matches; (b) **for osascript backends only:** `const composed = composeShellInvocation({ cwd, command })` then `const guard = rejectControlChars(composed)` — on hit, early-return `{ spawned: false, kind, reason: 'unsafe-command', error }`; (c) discover `callerTty` (see §3.2) — `null` is fine; (d) call `runner(backend.cmd, backend.build(<per-kind-input>), { stdio: ['ignore', 'ignore', 'pipe'] })` (stderr captured for classification); (e) on non-zero status, ask `backend.classifyFailure({ status, stderr, error })` → may return `automation-permission-denied` or a generic error string. `composeShellInvocation` MUST run exactly once per spawn, in the dispatcher, so the guard, the backend builder, and any test asserting the composed string all see the same bytes.
 - [ ] 2.4 Keep `buildTmuxSplitArgs` exported (the existing tmux test depends on it). Keep `shellQuote` exported. Tmux backend's `classifyFailure` only returns generic errors (no permission concept).
 
 ## 3. Shared helpers (live in spawner.mjs)
@@ -33,23 +33,22 @@
 
 ## 4. Implement ghostty-mac backend
 
-- [ ] 4.1 Add `buildGhosttyMacArgs({ cwd, command, callerTty })`. Body:
-  1. `const shell = composeShellInvocation({ cwd, command })` — Layer 1 (shell-safe).
-  2. `const literal = escapeAppleScriptLiteral(shell)` — Layer 2 (AppleScript-safe).
-  3. Build script lines:
+- [ ] 4.1 Add `buildGhosttyMacArgs({ composed, callerTty })`. `composed` is the already-shell-quoted output of `composeShellInvocation` (the dispatcher in §2.3 ran the control-char guard on it before calling this builder, so the builder treats it as safe). Body:
+  1. `const literal = escapeAppleScriptLiteral(composed)` — Layer 2 (AppleScript-safe).
+  2. Build script lines:
      - `tell application "Ghostty"`
      - `activate`
      - if `callerTty`: `set targetTty to "${escapeAppleScriptLiteral(callerTty)}"` then `set matched to missing value` then a `repeat with t in terminals` block that sets `matched` to the first `t` whose `tty` equals `targetTty`; an `if matched is not missing value then set newTerm to split matched direction right` branch and an `else` branch that does `new window`.
      - if no `callerTty`: skip the repeat, go straight to `new window`.
      - `input text "${literal}\n" to newTerm` (final line uses whichever variable the active branch set).
      - `end tell`
-  4. Return `osascriptArgsFromLines(scriptLines)`.
+  3. Return `osascriptArgsFromLines(scriptLines)`.
 - [ ] 4.2 Add `classifyGhosttyFailure({ status, stderr, error })`: if `stderr.includes('(-1743)') || /not authorized to send apple events/i.test(stderr)` → return `{ reason: 'automation-permission-denied', error: <message> }`; else return `{ error: <`Failed to drive ghostty-mac: ...`> }`.
 - [ ] 4.3 Wire the backend into the strategy table.
 
 ## 5. Implement iterm2-mac backend
 
-- [ ] 5.1 Add `buildIterm2MacArgs({ cwd, command, callerTty })`. Body mirrors §4.1 but with iTerm2 verbs: `tell application "iTerm"`, iterate `windows`/`sessions of <window>` comparing `tty of <session>`, on match `tell <session>` → `split vertically with default profile`, on no match (or no `callerTty`) `create window with default profile`. Final command via `write text "${literal}" to <newSession>` (no trailing `\n` — iTerm2 `write text` adds Enter).
+- [ ] 5.1 Add `buildIterm2MacArgs({ composed, callerTty })`. `composed` is the already-shell-quoted output of `composeShellInvocation` (guarded by the dispatcher in §2.3). Body mirrors §4.1 but with iTerm2 verbs: `const literal = escapeAppleScriptLiteral(composed)`, then `tell application "iTerm"`, iterate `windows`/`sessions of <window>` comparing `tty of <session>`, on match `tell <session>` → `split vertically with default profile`, on no match (or no `callerTty`) `create window with default profile`. Final command via `write text "${literal}" to <newSession>` (no trailing `\n` — iTerm2 `write text` adds Enter).
 - [ ] 5.2 Add `classifyIterm2Failure(...)` identical in shape to §4.2.
 - [ ] 5.3 Wire the backend into the strategy table.
 
