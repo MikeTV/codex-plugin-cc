@@ -92,9 +92,9 @@ When detection returns `{ kind: 'none' }`, the spawner MUST NOT invoke any runne
 - **THEN** the runner is not called
 - **AND** the spawner result is `{ spawned: false, kind: 'none' }` (no `error` field)
 
-### Requirement: AppleScript literal escaping
+### Requirement: AppleScript literal escaping (osascript backends only)
 
-Backends that build AppleScript snippets SHALL escape backslash and double-quote characters in the interpolated shell command so that the observer command — as constructed by the spawner's own `buildObserverCommand` helper plus the shell-quoting layer in the requirement below — cannot break the surrounding `"..."` literal. The escape function MUST NOT be claimed safe against arbitrary user-controlled strings; the control-character rejection requirement is what enforces that input domain.
+The `ghostty-mac` and `iterm2-mac` backends SHALL escape backslash and double-quote characters in the interpolated shell command (the output of `composeShellInvocation`, after the control-character guard) so that the observer command — as constructed by the spawner's own `buildObserverCommand` helper plus the shell-quoting layer in the requirement above — cannot break the surrounding `"..."` literal. The escape function MUST NOT be claimed safe against arbitrary user-controlled strings; the control-character rejection requirement is what enforces that input domain. The `tmux` backend does not build AppleScript and is exempt from this requirement.
 
 #### Scenario: command contains a double-quote
 
@@ -106,9 +106,9 @@ Backends that build AppleScript snippets SHALL escape backslash and double-quote
 - **WHEN** the composed shell command (after shell-quoting) contains `\`
 - **THEN** the produced AppleScript contains `\\` at each occurrence inside its `"..."` literal
 
-### Requirement: Shell-safe composition of cwd and command
+### Requirement: Shell-safe composition of cwd and command (osascript backends only)
 
-The spawner SHALL produce the final shell invocation via a single `composeShellInvocation({ cwd, command })` helper that returns exactly `cd ${shellQuote(cwd)} && ${command}` — `cwd` is shell-quoted *here* (single-quote escaping, doubling internal `'` as `'\''`), and `command` MUST be the output of `buildObserverCommand` in `observe.mjs`, which is a space-joined sequence of already-individually-shell-quoted argv tokens. `command` MUST NOT be re-quoted by this layer; doing so would collapse the argv tokens into a single literal string and break execution.
+For the `ghostty-mac` and `iterm2-mac` backends, the spawner SHALL produce the final shell invocation via a single `composeShellInvocation({ cwd, command })` helper that returns exactly `cd ${shellQuote(cwd)} && ${command}` — `cwd` is shell-quoted *here* (single-quote escaping, doubling internal `'` as `'\''`), and `command` MUST be the output of `buildObserverCommand` in `observe.mjs`, which is a space-joined sequence of already-individually-shell-quoted argv tokens. `command` MUST NOT be re-quoted by this layer; doing so would collapse the argv tokens into a single literal string and break execution. The `tmux` backend passes `cwd` and `command` as separate `execve` args to `tmux` and does not call `composeShellInvocation`; it is exempt from this requirement.
 
 The two quoting layers MUST run in this exact order, with no intervening transformation:
 
@@ -176,9 +176,9 @@ The osascript backends SHALL discover the caller shell's controlling tty (walkin
 - **WHEN** process-ancestry discovery returns no tty (e.g., sandboxed shell, `ps` unavailable)
 - **THEN** the spawner builds AppleScript that goes directly to the new-window branch with no split attempt
 
-### Requirement: Reject control characters in the composed shell invocation
+### Requirement: Reject control characters in the composed shell invocation (osascript backends only)
 
-After `composeShellInvocation({ cwd, command })` has produced the final `cd <quoted-cwd> && <command>` string and BEFORE `escapeAppleScriptLiteral` runs, the spawner SHALL scan that exact composed string for ASCII control bytes in the range `0x00`–`0x1F` other than `0x09` (tab) and `0x20` (space). On any hit, the spawner SHALL return `{ spawned: false, kind: <detected-kind>, reason: 'unsafe-command', error: <human-readable-message naming the offending byte and where in the composed string it appeared> }` and MUST NOT invoke the runner or proceed to AppleScript escaping. Scanning the composed string (not the raw `cwd` or raw `command` in isolation) is mandatory so that control bytes embedded in `cwd` are caught before they reach `input text` / `write text`.
+For the `ghostty-mac` and `iterm2-mac` backends, after `composeShellInvocation({ cwd, command })` has produced the final `cd <quoted-cwd> && <command>` string and BEFORE `escapeAppleScriptLiteral` runs, the spawner SHALL scan that exact composed string for ASCII control bytes in the range `0x00`–`0x1F` other than `0x09` (tab) and `0x20` (space). On any hit, the spawner SHALL return `{ spawned: false, kind: <detected-kind>, reason: 'unsafe-command', error: <human-readable-message naming the offending byte and where in the composed string it appeared> }` and MUST NOT invoke the runner or proceed to AppleScript escaping. Scanning the composed string (not the raw `cwd` or raw `command` in isolation) is mandatory so that control bytes embedded in `cwd` are caught before they reach `input text` / `write text`. The `tmux` backend is exempt because it passes `cwd` via `-c <cwd>` and the command as a separate `execve` arg — no AppleScript-literal injection vector exists.
 
 #### Scenario: cwd contains an embedded newline
 

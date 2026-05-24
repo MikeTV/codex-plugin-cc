@@ -28,9 +28,14 @@ A first-pass version of this document was reviewed adversarially by Codex (verdi
 
 ### 1. Strategy table over if/elif chain
 
-Each backend is a small record `{ detect, build, cmd }`. `detectTerminal(env)` walks the table in priority order and returns the first hit. `spawnObserverInTerminal({ cwd, command, env, runner })` looks up the matching backend and calls `runner(backend.cmd, backend.build({ cwd, command }), { stdio: 'ignore' })`.
+Each backend is a small record `{ detect, build, cmd, classifyFailure }`. `detectTerminal(env)` walks the table in priority order and returns the first hit. `spawnObserverInTerminal({ cwd, command, env, runner })` then drives a per-kind pipeline:
 
-Trade-off considered: an if/elif chain is two lines shorter for two backends, but it forces a duplicate switch in tests. The table makes "add the third backend" a one-record diff.
+- **tmux backend** — receives `build({ cwd, command })`. No shell composition (tmux takes `-c <cwd>` as a separate `execve` arg and the command as another arg, so there is no shell-injection vector). Runner invoked with `{ stdio: 'ignore' }`. `classifyFailure` returns only generic errors.
+- **osascript backends (`ghostty-mac`, `iterm2-mac`)** — dispatcher first calls `composed = composeShellInvocation({ cwd, command })`, then `rejectControlChars(composed)` (early-return `unsafe-command` on hit), then `callerTty = discoverCallerTty()`. The builder receives `{ composed, callerTty }` — never raw `cwd`/`command` — so composition cannot drift between dispatcher and backend. Runner invoked with `{ stdio: ['ignore', 'ignore', 'pipe'] }` so stderr is captured for `classifyFailure`, which can return `automation-permission-denied` in addition to generic errors.
+
+Both branches share the same outer success/failure return shape (`{ spawned, kind, reason?, error? }`).
+
+Trade-off considered: an if/elif chain is two lines shorter for two backends, but it forces a duplicate switch in tests. The table makes "add the third backend" a one-record diff. Per-kind build-input shapes (tmux vs osascript) are deliberate — keeping them uniform would force tmux through `composeShellInvocation` for no benefit, or smuggle composition into the builder where it can drift.
 
 ### 2. Detection precedence: tmux > ghostty-mac > iterm2-mac > none
 
