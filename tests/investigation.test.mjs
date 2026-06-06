@@ -799,6 +799,7 @@ test("finalize turn that recovered from a transient reconnect keeps its valid ve
       fake.env
     );
 
+    assert.equal(result.status, 0, "a recovered run with a valid verdict must exit success, not propagate the stale transient error status");
     const payload = JSON.parse(result.stdout.trim());
     assert.notEqual(payload.failed, true, "a recovered finalize turn must NOT be flagged failed");
     assert.equal(payload.result?.verdict, "needs-attention", "valid verdict must be preserved");

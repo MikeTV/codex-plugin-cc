@@ -494,8 +494,16 @@ async function executeReviewRun(request) {
     payload.investigation = result.investigation;
   }
 
+  // A recovered finalize turn (transient reconnect/error, but valid structured
+  // output) carries a stale non-zero `result.status` from buildResultStatus.
+  // Since we produced a usable verdict and did not flag the run failed, exit
+  // success — otherwise the foreground command exits non-zero and background
+  // jobs are recorded as failed despite a valid review. Conversely, a genuinely
+  // failed run keeps its non-zero status.
+  const exitStatus = (!payload.failed && parsed.parsed) ? 0 : result.status;
+
   return {
-    exitStatus: result.status,
+    exitStatus,
     threadId: result.threadId,
     turnId: result.turnId,
     payload,
