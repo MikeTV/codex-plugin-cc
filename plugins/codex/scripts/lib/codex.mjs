@@ -1289,13 +1289,17 @@ export async function runAppServerInvestigation(cwd, options = {}) {
           "Finalize turn ran commands; retrying with stricter prompt.",
           "finalizing"
         );
-      }
-      // Aggregate the wasted commands so the caller still sees what happened.
-      for (const cmd of finalizeState.commandExecutions) {
-        aggregatedCommandExecutions.push(cmd);
-      }
-      for (const change of finalizeState.fileChanges) {
-        aggregatedFileChanges.push(change);
+        // Aggregate the wasted commands from this (about-to-be-superseded)
+        // attempt so the caller still sees what happened. The final attempt's
+        // executions are aggregated once after the loop, so only fold in
+        // attempts we are leaving behind here — otherwise the last attempt
+        // would be counted twice.
+        for (const cmd of finalizeState.commandExecutions) {
+          aggregatedCommandExecutions.push(cmd);
+        }
+        for (const change of finalizeState.fileChanges) {
+          aggregatedFileChanges.push(change);
+        }
       }
     }
 

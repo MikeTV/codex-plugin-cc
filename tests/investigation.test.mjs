@@ -467,6 +467,13 @@ test("finalize retry gives up after the second attempt and surfaces the output",
     assert.equal(starts.length, 3, "1 recon + 2 finalize attempts only — no infinite loop");
     assert.equal(result.finalMessage, "{\"cmd\":\"wc -l b\"}",
       "the second-attempt output is surfaced so the parser can flag it");
+
+    // The two finalize attempts ran one command each; neither should be
+    // double-counted. (Regression: the final attempt was previously appended
+    // both in-loop and after the loop, duplicating its command/file traces.)
+    const cmds = result.commandExecutions.map((c) => c.command);
+    assert.deepEqual(cmds, ["wc -l a", "wc -l b"],
+      "each finalize attempt's commands recorded exactly once, no duplicates");
   } finally {
     fake.close();
   }
