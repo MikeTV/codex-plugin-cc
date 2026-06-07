@@ -198,32 +198,52 @@ function formatSection(title, body) {
   return [`## ${title}`, "", body.trim() ? body.trim() : "(none)", ""].join("\n");
 }
 
-function formatUntrackedFile(cwd, relativePath) {
+// Single source of truth for whether an untracked file's contents can be
+// embedded into the inline prompt. Returns either a `skipped` reason (the file
+// is a directory, too large, binary, or unreadable) or the file `content`.
+function classifyUntrackedFile(cwd, relativePath) {
   const absolutePath = path.join(cwd, relativePath);
   let stat;
   try {
     stat = fs.statSync(absolutePath);
   } catch {
-    return `### ${relativePath}\n(skipped: broken symlink or unreadable file)`;
+    return { skipped: "broken symlink or unreadable file" };
   }
   if (stat.isDirectory()) {
-    return `### ${relativePath}\n(skipped: directory)`;
+    return { skipped: "directory" };
   }
   if (stat.size > MAX_UNTRACKED_BYTES) {
-    return `### ${relativePath}\n(skipped: ${stat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)`;
+    return { skipped: `${stat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit` };
   }
 
   let buffer;
   try {
     buffer = fs.readFileSync(absolutePath);
   } catch {
-    return `### ${relativePath}\n(skipped: broken symlink or unreadable file)`;
+    return { skipped: "broken symlink or unreadable file" };
   }
   if (!isProbablyText(buffer)) {
-    return `### ${relativePath}\n(skipped: binary file)`;
+    return { skipped: "binary file" };
   }
 
-  return [`### ${relativePath}`, "```", buffer.toString("utf8").trimEnd(), "```"].join("\n");
+  return { content: buffer.toString("utf8").trimEnd() };
+}
+
+// True when at least one untracked file's contents cannot be embedded inline.
+// An untracked file never appears in `git diff`, so a single skipped untracked
+// file otherwise looks like a 1-file, 0-byte diff and slips onto the inline
+// path — where the prompt embeds only a `(skipped: ...)` marker and forbids
+// shell, leaving the reviewer nothing to inspect.
+function hasSkippedUntrackedContent(cwd, untracked) {
+  return untracked.some((file) => Boolean(classifyUntrackedFile(cwd, file).skipped));
+}
+
+function formatUntrackedFile(cwd, relativePath) {
+  const classified = classifyUntrackedFile(cwd, relativePath);
+  if (classified.skipped) {
+    return `### ${relativePath}\n(skipped: ${classified.skipped})`;
+  }
+  return [`### ${relativePath}`, "```", classified.content, "```"].join("\n");
 }
 
 function collectWorkingTreeContext(cwd, state, options = {}) {
@@ -323,7 +343,8 @@ export function collectReviewContext(cwd, target, options = {}) {
     includeDiff =
       options.includeDiff ??
       (listUniqueFiles(state.staged, state.unstaged, state.untracked).length <= maxInlineFiles &&
-        diffBytes <= maxInlineDiffBytes);
+        diffBytes <= maxInlineDiffBytes &&
+        !hasSkippedUntrackedContent(repoRoot, state.untracked));
     details = collectWorkingTreeContext(repoRoot, state, { includeDiff });
   } else {
     const comparison = buildBranchComparison(repoRoot, target.baseRef);
