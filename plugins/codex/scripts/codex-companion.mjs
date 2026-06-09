@@ -18,6 +18,7 @@ import {
     parseStructuredOutput,
     readOutputSchema,
     resolveReviewTurnIdleTimeoutMs,
+    resolveRunExitStatus,
     runAppServerInvestigation,
     runAppServerReview,
     runAppServerTurn
@@ -395,7 +396,7 @@ async function executeReviewRun(request) {
       threadId: result.threadId,
       sourceThreadId: result.sourceThreadId,
       codex: {
-        status: result.status,
+        status: resolveRunExitStatus(result, result.reviewText),
         stderr: result.stderr,
         stdout: result.reviewText,
         reasoning: result.reasoningSummary
@@ -411,7 +412,7 @@ async function executeReviewRun(request) {
     );
 
     return {
-      exitStatus: result.status,
+      exitStatus: resolveRunExitStatus(result, result.reviewText),
       threadId: result.threadId,
       turnId: result.turnId,
       payload,
@@ -643,8 +644,9 @@ async function executeTaskRun(request) {
       write: Boolean(request.write)
     }
   );
+  const exitStatus = resolveRunExitStatus(result, result.finalMessage);
   const payload = {
-    status: result.status,
+    status: exitStatus,
     threadId: result.threadId,
     rawOutput,
     touchedFiles: result.touchedFiles,
@@ -652,7 +654,7 @@ async function executeTaskRun(request) {
   };
 
   return {
-    exitStatus: result.status,
+    exitStatus,
     threadId: result.threadId,
     turnId: result.turnId,
     payload,

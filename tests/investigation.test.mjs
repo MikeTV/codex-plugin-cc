@@ -1159,3 +1159,74 @@ test("finalize prompt forbids tool-call stub output", () => {
   assert.match(text, /no tool-call payloads|no shell commands/i,
     "finalize prompt must spell out the no-tool-call rule");
 });
+
+test("task turn that recovered from a transient reconnect is NOT marked failed (e2e)", async () => {
+  // A task turn emits a valid agent message AND a stale transient `error`
+  // ("Reconnecting... 1/5"), then turn/completed. The companion must exit 0 and
+  // report success — not propagate the stale non-zero status from buildResultStatus.
+  const cwd = makeSelfCollectGitFixture();
+  const fake = setupFakeCodex({ cwd });
+  try {
+    fake.queueTurnResponse({
+      finalAnswer: { text: "ALLOW: looks fine" },
+      turnError: { message: "Reconnecting... 1/5" }
+    });
+
+    const result = runCompanion(["task", "--json", "--cwd", cwd, "do the thing"], fake.env);
+
+    assert.equal(result.status, 0, "a recovered task must exit 0, not propagate the stale transient error status");
+    const payload = JSON.parse(result.stdout.trim());
+    assert.match(payload.rawOutput, /ALLOW: looks fine/, "the real agent answer must be returned");
+    assert.equal(payload.status, 0, "payload.status must be normalized to the resolved success status");
+  } finally {
+    fake.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("task turn that errored with no usable output still fails (e2e)", async () => {
+  // Guard the genuine-failure case: a transient/fatal error with NO agent message
+  // must still exit non-zero. Otherwise resolveRunExitStatus would whitewash real
+  // failures.
+  const cwd = makeSelfCollectGitFixture();
+  const fake = setupFakeCodex({ cwd });
+  try {
+    fake.queueTurnResponse({
+      finalAnswer: null,
+      turnError: { message: "Connection lost; giving up." }
+    });
+
+    const result = runCompanion(["task", "--json", "--cwd", cwd, "do the thing"], fake.env);
+
+    assert.notEqual(result.status, 0, "a turn that errored with no usable output must still fail");
+  } finally {
+    fake.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("native review that recovered from a transient reconnect is NOT marked failed (e2e)", async () => {
+  // The native /codex:review branch returns exitStatus from result.status raw.
+  // A recovered native review (reviewText present + stale error) must exit 0.
+  // Note: review uses reviewText as the usable-output signal, not finalMessage.
+  const cwd = makeInlineGitFixture();
+  const fake = setupFakeCodex({ cwd });
+  try {
+    fake.queueTurnResponse({
+      reviewText: "Reviewed current changes.\nNo material issues found.",
+      turnError: { message: "Reconnecting... 1/5" }
+    });
+
+    const result = runCompanion(
+      ["review", "--base", "main", "--scope", "branch", "--cwd", cwd, "--json"],
+      fake.env
+    );
+
+    assert.equal(result.status, 0, "a recovered native review with review text must exit 0");
+    const payload = JSON.parse(result.stdout.trim());
+    assert.equal(payload.codex.status, 0, "payload.codex.status must be normalized to the resolved success status");
+  } finally {
+    fake.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
