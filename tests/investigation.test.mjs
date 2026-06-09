@@ -1332,3 +1332,39 @@ test("plain recon turn does not infer completion from a readiness cue (Defect A 
     fake.close();
   }
 });
+
+test("a verdict streamed after a readiness cue is captured, not discarded (Defect A end-to-end)", async () => {
+  const cwd = makeTempDir("codex-inv-test-");
+  const fake = setupFakeCodex({ cwd });
+  try {
+    fake.enableSerialization();
+    // Recon turn 1: a "ready for finalize" cue immediately, then the REAL verdict
+    // (~300ms) and the REAL turn/completed (~600ms). delayCompletedMs (600) is
+    // ABOVE the unfixed 250ms inference window, so unfixed code dispatches
+    // finalize while recon is still busy -> finalize hangs -> watchdog error.
+    fake.queueTurnResponse({
+      commands: [],
+      finalAnswer: { text: "I'm ready for finalize." },
+      lateFinalAnswer: { text: "Investigation complete. Verdict ready.", afterMs: 300 },
+      delayCompletedMs: 600
+    });
+    // Finalize turn 2: schema-enforced structured JSON.
+    fake.queueTurnResponse({ finalAnswer: { text: STRUCTURED_REVIEW } });
+
+    const result = await runAppServerInvestigation(fake.cwd, {
+      investigatePrompt: "Investigate.",
+      finalizePrompt: "Finalize.",
+      outputSchema: { type: "object", required: ["verdict"] },
+      turnIdleTimeoutMs: 2000
+      // No inferredCompletionQuietMs override: a plain recon turn must never
+      // infer regardless of the window. The fix is the sawSubagentWork gate.
+    });
+
+    assert.equal(result.error ?? null, null, "fixed code must NOT hang to the watchdog");
+    assert.equal(result.finalMessage, STRUCTURED_REVIEW, "verdict from finalize is preserved");
+    const starts = fake.requests.filter((r) => r.method === "turn/start");
+    assert.equal(starts.length, 2, "recon completes, then finalize is dispatched onto an idle thread");
+  } finally {
+    fake.close();
+  }
+});

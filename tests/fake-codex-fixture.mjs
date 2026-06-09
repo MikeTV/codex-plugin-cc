@@ -15,6 +15,7 @@ const readline = require("node:readline");
 	const STATE_PATH = ${JSON.stringify(statePath)};
 	const BEHAVIOR = ${JSON.stringify(behavior)};
 	const interruptibleTurns = new Map();
+	let serializedBusyThread = null;
 
 	function loadState() {
 	  if (!fs.existsSync(STATE_PATH)) {
@@ -396,6 +397,18 @@ rl.on("line", (line) => {
           if (!state.requests) { state.requests = []; }
           state.requests.push({ method: "turn/start", params: message.params });
 
+          if (state.serialize) {
+            if (serializedBusyThread === thread.id) {
+              // A turn is already open on this thread. The real app-server queues
+              // this turn/start and (in the bug) never opens it: no result, no
+              // turn/started, no turn/completed. Persist the recorded request,
+              // then hang.
+              saveState(state);
+              break;
+            }
+            serializedBusyThread = thread.id;
+          }
+
           const turnId = nextTurnId(state);
           thread.updatedAt = now();
 
@@ -461,6 +474,13 @@ rl.on("line", (line) => {
             send({ method: "item/completed", params: { threadId: thread.id, turnId, item: { type: "agentMessage", id: "msg_" + turnId, text: entry.finalAnswer.text, phase } } });
           }
 
+          if (entry && entry.lateFinalAnswer) {
+            const lateTurnId = turnId;
+            setTimeout(() => {
+              send({ method: "item/completed", params: { threadId: thread.id, turnId: lateTurnId, item: { type: "agentMessage", id: "late_" + lateTurnId, text: entry.lateFinalAnswer.text, phase: "final_answer" } } });
+            }, entry.lateFinalAnswer.afterMs ?? 100);
+          }
+
           if (entry && entry.cueThenHang) {
             // Emit only the readiness cue (already sent above); never send a real
             // turn/completed. Exercises the Defect A gate: a plain turn must not
@@ -479,9 +499,11 @@ rl.on("line", (line) => {
           if (entry && entry.delayCompletedMs) {
             const completedTurnId = turnId;
             setTimeout(() => {
+              if (state.serialize) { serializedBusyThread = null; }
               send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(completedTurnId, "completed") } });
             }, entry.delayCompletedMs);
           } else {
+            if (state.serialize) { serializedBusyThread = null; }
             send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "completed") } });
           }
           break;
@@ -737,7 +759,8 @@ export function setupFakeCodex({ cwd } = {}) {
     capabilities: null,
     lastInterrupt: null,
     queue: [],
-    requests: []
+    requests: [],
+    serialize: false
   };
   fs.writeFileSync(statePath, JSON.stringify(initialState, null, 2));
 
@@ -783,6 +806,11 @@ export function setupFakeCodex({ cwd } = {}) {
       const state = readState();
       if (!state.queue) { state.queue = []; }
       state.queue.push({ hangAfterStarted: true });
+      writeState(state);
+    },
+    enableSerialization() {
+      const state = readState();
+      state.serialize = true;
       writeState(state);
     },
     // `requests` re-reads the state file each access; assign to a local variable for repeated use.
