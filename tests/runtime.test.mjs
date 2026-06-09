@@ -758,11 +758,34 @@ test("task can finish after subagent work even if the parent turn/completed even
 
   const result = run("node", [SCRIPT, "task", "challenge the current design"], {
     cwd: repo,
-    env: buildEnv(binDir)
+    // The subagent-completion fallback now uses a 15s default quiet window;
+    // shrink it via the env override so this test resolves in ms, not 15s.
+    env: { ...buildEnv(binDir), CODEX_INFERRED_COMPLETION_QUIET_MS: "50" }
   });
 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "Handled the requested task.\nTask prompt accepted.\n");
+});
+
+test("CODEX_INFERRED_COMPLETION_QUIET_MS overrides the inferred-completion quiet window", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "with-subagent-no-main-turn-completed");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const start = Date.now();
+  const result = run("node", [SCRIPT, "task", "challenge the current design"], {
+    cwd: repo,
+    env: { ...buildEnv(binDir), CODEX_INFERRED_COMPLETION_QUIET_MS: "50" }
+  });
+  const elapsed = Date.now() - start;
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "Handled the requested task.\nTask prompt accepted.\n");
+  assert.ok(elapsed < 10000, `inference must fire on the short window (took ${elapsed}ms)`);
 });
 
 test("task using the shared broker still completes when Codex spawns subagents", () => {
