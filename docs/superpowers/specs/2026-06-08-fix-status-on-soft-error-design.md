@@ -169,6 +169,22 @@ mapping in memory `codex-plugin-runtime-source`).
 
 `?? ""`-empty-string family; native review missing idle watchdog / empty-diff
 short-circuit; `--turn-idle-timeout` upper bound; `runAppServerInvestigation`
-`truncated` mislabel at 0 commands; `captureTurn` `armIdle()` ordering;
-uncommitted dead `runAppServerTurn` import in tests; stale
-`DEFAULT_INLINE_DIFF_MAX_FILES` comment.
+`truncated` mislabel at 0 commands; uncommitted dead `runAppServerTurn` import in
+tests; stale `DEFAULT_INLINE_DIFF_MAX_FILES` comment.
+
+**Promoted to a separate work item (own brainstorm → spec → plan):** the
+investigation-loop turn-lifecycle race. The recon loop advances to the finalize
+turn on an *inferred* completion (`scheduleInferredCompletion`, codex.mjs:393)
+that fires on the first `final_answer`-phase message — which can be a "ready to
+finalize" readiness cue, not the real end of the turn. The finalize `turn/start`
+is then dispatched while the app-server's recon turn is still active; the server
+queues it and never opens it, the real verdict streams under the recon turn and
+is discarded, and the turn hangs until the 180s idle watchdog aborts. This
+bundles **Defect A** (premature finalize dispatch; fix = wait for a real
+`turn/completed`, demote inference to a guarded fallback) with **Defect B**
+(`captureTurn` `armIdle()` runs before the `belongsToTurn` filter, codex.mjs:631,
+so orphaned cross-turn traffic re-arms the captured turn's watchdog and masks the
+stuck turn). Both live in `captureTurn`/the idle-watchdog subsystem; fix them
+together, NOT in this status-fix change. Evidence: live run thread
+`019ea5d4-0c53-75f1-9032-5573d18cd878` in `~/.codex/logs_2.sqlite` (2026-06-08
+~06:21).
