@@ -1271,3 +1271,29 @@ test("idle watchdog interrupts with the buffered turn id when the turn/start RPC
     fake.close();
   }
 });
+
+test("foreign-thread chatter does not re-arm the current turn's idle watchdog (Defect B)", async () => {
+  const cwd = makeTempDir("codex-inv-test-");
+  const fake = setupFakeCodex({ cwd });
+  try {
+    // Recon turn 1: emits turn/started, then a long stream of foreign-thread
+    // notifications spaced UNDER the idle window, then never completes OUR turn.
+    // Spans ~2.5s so the buggy (re-arm-on-foreign) path cannot time out before
+    // chatter stops; the fixed path times out promptly at the idle window.
+    fake.queueTurnResponse({ foreignChatterThenHang: { count: 50, everyMs: 50 } });
+
+    const start = Date.now();
+    const result = await runAppServerInvestigation(fake.cwd, {
+      investigatePrompt: "Investigate.",
+      finalizePrompt: "Finalize.",
+      turnIdleTimeoutMs: 300
+    });
+    const elapsed = Date.now() - start;
+
+    assert.ok(result.error, "stuck turn must time out despite foreign chatter");
+    assert.match(result.error.message, /idle|timeout|timed out/i);
+    assert.ok(elapsed < 1500, `watchdog must fire at the idle window, not be held open by foreign chatter (took ${elapsed}ms)`);
+  } finally {
+    fake.close();
+  }
+});

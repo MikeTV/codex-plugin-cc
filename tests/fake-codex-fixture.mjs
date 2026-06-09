@@ -427,6 +427,27 @@ rl.on("line", (line) => {
           send({ id: message.id, result: { turn: buildTurn(turnId) } });
           send({ method: "turn/started", params: { threadId: thread.id, turn: buildTurn(turnId) } });
 
+          if (entry && entry.foreignChatterThenHang) {
+            const { count = 5, everyMs = 50 } = entry.foreignChatterThenHang;
+            const foreignThreadId = thread.id + "-foreign";
+            const foreignTurnId = turnId + "-foreign";
+            // Foreign-thread traffic: must NOT re-arm our turn's watchdog.
+            for (let n = 0; n < count; n += 1) {
+              setTimeout(() => {
+                send({
+                  method: "item/completed",
+                  params: {
+                    threadId: foreignThreadId,
+                    turnId: foreignTurnId,
+                    item: { type: "agentMessage", id: "foreign_" + n, text: "noise", phase: "analysis" }
+                  }
+                });
+              }, everyMs * (n + 1));
+            }
+            // Never emit turn/completed for OUR turn -> the watchdog must fire.
+            break;
+          }
+
           const commands = (entry && entry.commands) || [];
           let cmdCounter = 0;
           for (const cmd of commands) {

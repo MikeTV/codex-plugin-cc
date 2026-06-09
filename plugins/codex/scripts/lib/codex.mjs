@@ -644,22 +644,24 @@ async function captureTurn(client, threadId, startRequest, options = {}) {
       return;
     }
 
-    // Preserve existing behavior for this task: re-arm on all post-buffer
-    // traffic. (Task 2 replaces this with a belonging-gated re-arm.)
-    armIdle();
-
     if (message.method === "thread/started" || message.method === "thread/name/updated") {
+      // Turn-agnostic bookkeeping (thread registration / naming). Safe to re-arm.
+      armIdle();
       applyTurnNotification(state, message);
       return;
     }
 
     if (!belongsToTurn(state, message)) {
-        if (previousHandler) {
-          previousHandler(message);
-        }
-        return;
+      // Foreign turn/thread traffic must NOT re-arm our watchdog (Defect B):
+      // otherwise cross-turn chatter masks a stuck turn and it never fails fast.
+      if (previousHandler) {
+        previousHandler(message);
+      }
+      return;
     }
 
+    // Belongs to our turn: re-arm the idle watchdog, then apply.
+    armIdle();
     applyTurnNotification(state, message);
   });
 
