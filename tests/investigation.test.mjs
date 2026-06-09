@@ -1297,3 +1297,38 @@ test("foreign-thread chatter does not re-arm the current turn's idle watchdog (D
     fake.close();
   }
 });
+
+test("plain recon turn does not infer completion from a readiness cue (Defect A gate)", async () => {
+  const cwd = makeTempDir("codex-inv-test-");
+  const fake = setupFakeCodex({ cwd });
+  try {
+    // Recon turn 1: emits a "ready for finalize" final_answer cue, then goes
+    // silent — NO real turn/completed, NO subagent work. A plain turn must wait
+    // for turn/completed (which never arrives) -> idle watchdog aborts.
+    fake.queueTurnResponse({
+      commands: [],
+      finalAnswer: { text: "I'm ready for finalize." },
+      cueThenHang: true
+    });
+
+    const result = await runAppServerInvestigation(fake.cwd, {
+      investigatePrompt: "Investigate.",
+      finalizePrompt: "Finalize.",
+      outputSchema: { type: "object", required: ["verdict"] },
+      // Quiet window well below the idle timeout: on UNFIXED code, cue-based
+      // inference (now using this window) would fire at 60ms and the run would
+      // not error. On FIXED code, a plain turn never infers, so only the idle
+      // watchdog (400ms) ends it -> result.error is set.
+      inferredCompletionQuietMs: 60,
+      turnIdleTimeoutMs: 400
+    });
+
+    assert.ok(result.error, "a plain turn with no real turn/completed must time out, not infer");
+    assert.match(result.error.message, /idle|timeout|timed out/i);
+    // Finalize must NOT have been dispatched (the recon turn never completed).
+    const starts = fake.requests.filter((r) => r.method === "turn/start");
+    assert.equal(starts.length, 1, "finalize must not be dispatched when recon never completed");
+  } finally {
+    fake.close();
+  }
+});

@@ -461,6 +461,13 @@ rl.on("line", (line) => {
             send({ method: "item/completed", params: { threadId: thread.id, turnId, item: { type: "agentMessage", id: "msg_" + turnId, text: entry.finalAnswer.text, phase } } });
           }
 
+          if (entry && entry.cueThenHang) {
+            // Emit only the readiness cue (already sent above); never send a real
+            // turn/completed. Exercises the Defect A gate: a plain turn must not
+            // infer completion from the cue.
+            break;
+          }
+
           if (entry && entry.turnError) {
             send({ method: "error", params: { threadId: thread.id, turnId, error: { message: entry.turnError.message } } });
           }
@@ -469,7 +476,14 @@ rl.on("line", (line) => {
             send({ method: "item/completed", params: { threadId: thread.id, turnId, item: { type: "agentMessage", id: "msg_" + turnId, text: "", phase: "agent_message" } } });
           }
 
-          send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "completed") } });
+          if (entry && entry.delayCompletedMs) {
+            const completedTurnId = turnId;
+            setTimeout(() => {
+              send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(completedTurnId, "completed") } });
+            }, entry.delayCompletedMs);
+          } else {
+            send({ method: "turn/completed", params: { threadId: thread.id, turn: buildTurn(turnId, "completed") } });
+          }
           break;
         }
 

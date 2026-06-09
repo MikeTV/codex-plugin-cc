@@ -22,6 +22,8 @@
  *   finalTurn: Turn | null,
  *   completed: boolean,
  *   finalAnswerSeen: boolean,
+ *   sawSubagentWork: boolean,
+ *   inferredCompletionQuietMs: number,
  *   pendingCollaborations: Set<string>,
  *   activeSubagentTurns: Set<string>,
  *   completionTimer: ReturnType<typeof setTimeout> | null,
@@ -59,6 +61,26 @@ const DEFAULT_CONTINUE_PROMPT =
 // runners pass whatever they are given straight through to captureTurn, which
 // arms no watchdog for an absent/invalid value.
 const DEFAULT_TURN_IDLE_TIMEOUT_MS = 180_000;
+
+// Demoted-inference quiet window (Defect A). Inferred turn completion is a
+// FALLBACK for the subagent/collab case where the main thread never emits a
+// real turn/completed. It is eligible only after (a) the turn actually spawned
+// subagent/collab work, (b) that work has drained, and (c) the turn has been
+// silent for this long with no turn/completed. The window re-arms on every
+// belonging item/message, so only genuine silence triggers it. Plain recon
+// turns never infer — they wait for the real turn/completed.
+const DEFAULT_INFERRED_COMPLETION_QUIET_MS = 15_000;
+
+function resolveInferredCompletionQuietMs(explicitMs) {
+  if (Number.isFinite(explicitMs) && explicitMs > 0) {
+    return explicitMs;
+  }
+  const fromEnv = Number(process.env.CODEX_INFERRED_COMPLETION_QUIET_MS);
+  if (Number.isFinite(fromEnv) && fromEnv > 0) {
+    return fromEnv;
+  }
+  return DEFAULT_INFERRED_COMPLETION_QUIET_MS;
+}
 
 /**
  * Resolve the idle-watchdog timeout for REVIEW turns. Returns the review
@@ -344,6 +366,8 @@ function createTurnCaptureState(threadId, options = {}) {
     finalTurn: null,
     completed: false,
     finalAnswerSeen: false,
+    sawSubagentWork: false,
+    inferredCompletionQuietMs: resolveInferredCompletionQuietMs(options.inferredCompletionQuietMs),
     pendingCollaborations: new Set(),
     activeSubagentTurns: new Set(),
     completionTimer: null,
@@ -392,27 +416,43 @@ function completeTurn(state, turn = null, options = {}) {
   state.resolveCompletion(state);
 }
 
-function scheduleInferredCompletion(state) {
-  if (state.completed || state.finalTurn || !state.finalAnswerSeen) {
-    return;
-  }
+// Inferred completion is a guarded FALLBACK (Defect A). The primary completion
+// signal is always the real main-thread turn/completed. Inference is eligible
+// ONLY when the turn actually spawned subagent/collab work that has fully
+// drained — plain recon turns never infer; they wait for turn/completed. When
+// eligible, arm a quiet timer that re-arms on every subsequent belonging
+// item/message (see scheduleInferredCompletion call sites) and fires only after
+// inferredCompletionQuietMs of genuine silence with no real turn/completed.
+function inferenceEligible(state) {
+  return (
+    !state.completed &&
+    !state.finalTurn &&
+    state.sawSubagentWork &&
+    state.pendingCollaborations.size === 0 &&
+    state.activeSubagentTurns.size === 0
+  );
+}
 
-  if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0) {
+function scheduleInferredCompletion(state) {
+  if (!inferenceEligible(state)) {
     return;
   }
 
   clearCompletionTimer(state);
   state.completionTimer = setTimeout(() => {
     state.completionTimer = null;
-    if (state.completed || state.finalTurn || !state.finalAnswerSeen) {
-      return;
-    }
-    if (state.pendingCollaborations.size > 0 || state.activeSubagentTurns.size > 0) {
+    if (!inferenceEligible(state)) {
       return;
     }
     completeTurn(state, null, { inferred: true });
-  }, 250);
+  }, state.inferredCompletionQuietMs);
   state.completionTimer.unref?.();
+}
+
+function maybeRearmInferredCompletion(state) {
+  if (state.completionTimer && inferenceEligible(state)) {
+    scheduleInferredCompletion(state);
+  }
 }
 
 function belongsToTurn(state, message) {
@@ -429,6 +469,7 @@ function recordItem(state, item, lifecycle, threadId = null) {
   if (item.type === "collabAgentToolCall") {
     if (!threadId || threadId === state.threadId) {
       if (lifecycle === "started" || item.status === "inProgress") {
+        state.sawSubagentWork = true;
         state.pendingCollaborations.add(item.id);
       } else if (lifecycle === "completed") {
         state.pendingCollaborations.delete(item.id);
@@ -450,8 +491,14 @@ function recordItem(state, item, lifecycle, threadId = null) {
       if (!threadId || threadId === state.threadId) {
         state.lastAgentMessage = item.text;
         if (lifecycle === "completed" && item.phase === "final_answer") {
+          // Bookkeeping only; finalAnswerSeen is no longer part of the inference
+          // gate (Defect A) — a readiness cue must not complete a plain turn.
           state.finalAnswerSeen = true;
-          scheduleInferredCompletion(state);
+          // Do NOT infer from a readiness cue on a plain turn. Only re-arm the
+          // quiet fallback when subagent work has already happened and drained.
+          if (inferenceEligible(state)) {
+            scheduleInferredCompletion(state);
+          }
         }
       }
       if (lifecycle === "completed") {
@@ -528,6 +575,7 @@ function applyTurnNotification(state, message) {
       registerThread(state, message.params.threadId);
       state.threadTurnIds.set(message.params.threadId, message.params.turn.id);
       if ((message.params.threadId ?? null) !== state.threadId) {
+        state.sawSubagentWork = true;
         state.activeSubagentTurns.add(message.params.threadId);
       }
       emitProgress(
@@ -548,6 +596,7 @@ function applyTurnNotification(state, message) {
         const update = describeStartedItem(state, message.params.item);
         emitProgress(state.onProgress, update?.message, update?.phase ?? null);
       }
+      maybeRearmInferredCompletion(state);
       break;
     case "item/completed":
       recordItem(state, message.params.item, "completed", message.params.threadId ?? null);
@@ -555,6 +604,7 @@ function applyTurnNotification(state, message) {
         const update = describeCompletedItem(state, message.params.item);
         emitProgress(state.onProgress, update?.message, update?.phase ?? null);
       }
+      maybeRearmInferredCompletion(state);
       break;
     case "error":
       state.error = message.params.error;
@@ -1083,6 +1133,7 @@ export async function runAppServerTurn(cwd, options = {}) {
   // turnIdleTimeoutMs is absent/invalid. Review callers supply the default via
   // resolveReviewTurnIdleTimeoutMs(); task runs intentionally pass nothing.
   const turnIdleTimeoutMs = options.turnIdleTimeoutMs;
+  const inferredCompletionQuietMs = options.inferredCompletionQuietMs;
 
   return withAppServer(cwd, async (client) => {
     let threadId;
@@ -1126,7 +1177,7 @@ export async function runAppServerTurn(cwd, options = {}) {
           effort: options.effort ?? null,
           outputSchema: options.outputSchema ?? null
         }),
-      { onProgress: options.onProgress, turnIdleTimeoutMs }
+      { onProgress: options.onProgress, turnIdleTimeoutMs, inferredCompletionQuietMs }
     );
 
     return {
@@ -1168,6 +1219,7 @@ export async function runAppServerInvestigation(cwd, options = {}) {
   // Pass-through only (see runAppServerTurn): the review caller supplies the
   // watchdog default via resolveReviewTurnIdleTimeoutMs().
   const turnIdleTimeoutMs = options.turnIdleTimeoutMs;
+  const inferredCompletionQuietMs = options.inferredCompletionQuietMs;
   const sandbox = options.sandbox ?? "read-only";
 
   return withAppServer(cwd, async (client) => {
@@ -1204,7 +1256,7 @@ export async function runAppServerInvestigation(cwd, options = {}) {
               effort: options.effort ?? null,
               outputSchema: null
             }),
-          { onProgress: options.onProgress, turnIdleTimeoutMs }
+          { onProgress: options.onProgress, turnIdleTimeoutMs, inferredCompletionQuietMs }
         );
       } catch (transportError) {
         return {
@@ -1311,7 +1363,7 @@ export async function runAppServerInvestigation(cwd, options = {}) {
               effort: options.effort ?? null,
               outputSchema: options.outputSchema ?? null
             }),
-          { onProgress: options.onProgress, turnIdleTimeoutMs }
+          { onProgress: options.onProgress, turnIdleTimeoutMs, inferredCompletionQuietMs }
         );
       } catch (transportError) {
         return {
