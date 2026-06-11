@@ -148,3 +148,11 @@ vite.config.ts.timestamp-*
 
 output/
 plugins/codex/.generated/
+
+# Local tool state (Claude Code, Codex plugin runtime)
+.claude/
+.codex/
+
+# Local Claude Code plugin state (but track marketplace.json manifest)
+.claude-plugin/*
+!.claude-plugin/marketplace.json
