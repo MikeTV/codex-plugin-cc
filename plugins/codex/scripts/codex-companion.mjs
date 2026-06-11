@@ -7,7 +7,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
-import { resolveCodexSandboxMode } from "./lib/codex-config.mjs";
+import { resolveCodexAutoApprovalPolicy, resolveCodexSandboxMode } from "./lib/codex-config.mjs";
 import { createEventStream, EVENT_TYPES, emitEvent } from "./lib/event-stream.mjs";
 import { handleObserveCommand } from "./lib/observe.mjs";
 import {
@@ -632,6 +632,7 @@ async function executeTaskRun(request) {
     model: request.model,
     effort: request.effort,
     sandbox: resolveCodexSandboxMode(workspaceRoot) ?? (request.write ? "workspace-write" : "read-only"),
+    approvalPolicy: request.write ? resolveCodexAutoApprovalPolicy(workspaceRoot) : null,
     onProgress: request.onProgress,
     persistThread: true,
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)

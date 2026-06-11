@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Write-capable `task` runs (the `/codex:rescue` path) can now pass `approval_policy` through from Codex config**, mirroring the existing `sandbox_mode` passthrough. `resolveCodexAutoApprovalPolicy(workspaceRoot)` reads `approval_policy` from project-level `.codex/config.toml` then user-level `~/.codex/config.toml`, but only engages when `approvals_reviewer = "auto_review"` is also configured — headless runs have no human to answer approval prompts, so escalations must be answerable by Codex's automatic reviewer or the plugin keeps its hardcoded `approvalPolicy: "never"`. Prompts the auto reviewer rejects stay rejected. Review and adversarial-review threads are unaffected and remain pinned to `read-only` + `never`. Read-only task runs (no `--write`) also keep `never` so a non-write rescue cannot escalate into writes.
+
+### Fixed
+
+- `tests/codex-config.test.mjs` faked the home directory by setting `HOME` only; `os.homedir()` reads `USERPROFILE` on Windows, so the user-level-config tests read the developer's real `~/.codex/config.toml` and failed. The tests now set both variables.
+
 ## [1.4.0] - 2026-05-23
 
 ### Added
