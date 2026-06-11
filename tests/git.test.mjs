@@ -86,6 +86,28 @@ test("collectReviewContext keeps inline diffs for tiny adversarial reviews", () 
   assert.match(context.content, /INLINE_MARKER/);
 });
 
+test("collectReviewContext routes 2-file changes to self-collect (inline cap is 1)", () => {
+  // Regression guard: a 2-file change used to slip into inline-diff because
+  // the cap was 2, embedding both files into a single-turn schema-pinned
+  // prompt — and the model often responded with a tool-call stub instead
+  // of the review JSON. Two files now go through the two-phase self-collect
+  // path which tolerates exploratory turns.
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "seed.js"), "export const value = 'seed';\n");
+  run("git", ["add", "seed.js"], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  fs.writeFileSync(path.join(cwd, "doc-one.md"), "# planning doc\n".repeat(50));
+  fs.writeFileSync(path.join(cwd, "doc-two.md"), "# spec doc\n".repeat(50));
+
+  const target = resolveReviewTarget(cwd, {});
+  const context = collectReviewContext(cwd, target);
+
+  assert.equal(context.fileCount, 2);
+  assert.equal(context.inputMode, "self-collect",
+    "2-file changes must NOT be inlined; they hit the schema-pinned single-turn bug otherwise");
+});
+
 test("collectReviewContext skips untracked directories in working tree review", () => {
   const cwd = makeTempDir();
   initGitRepo(cwd);
@@ -180,4 +202,65 @@ test("collectReviewContext keeps untracked file content in lightweight working t
   assert.doesNotMatch(context.content, /TRACKED_MARKER_[AB]/);
   assert.match(context.content, /## Untracked Files/);
   assert.match(context.content, /UNTRACKED_RISK_MARKER/);
+});
+
+test("collectReviewContext routes a single oversized untracked file to self-collect", () => {
+  // An untracked file never shows up in `git diff`, so its size does not count
+  // toward diffBytes. A single untracked file >24 KiB therefore looked like a
+  // 1-file, 0-byte diff and slipped onto the inline path — where the prompt
+  // embeds only a `(skipped: ...)` marker AND forbids shell. The reviewer could
+  // then only approve/guess. Skipped untracked content must fall through to
+  // self-collect so Codex can read the file with read-only commands.
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "seed.js"), "export const value = 'seed';\n");
+  run("git", ["add", "seed.js"], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  // One untracked file, contents exceed MAX_UNTRACKED_BYTES (24 KiB).
+  fs.writeFileSync(path.join(cwd, "big-untracked.txt"), "x".repeat(30 * 1024));
+
+  const target = resolveReviewTarget(cwd, {});
+  const context = collectReviewContext(cwd, target);
+
+  assert.equal(context.fileCount, 1);
+  assert.equal(context.inputMode, "self-collect",
+    "a skipped untracked file must NOT be inlined; the prompt would embed only a (skipped) marker while forbidding shell");
+});
+
+test("collectReviewContext routes a single binary untracked file to self-collect", () => {
+  // Same hazard as the oversized case: a small binary untracked file is within
+  // the byte/file caps but its contents are skipped as `(skipped: binary file)`,
+  // so the inline prompt would show nothing useful while forbidding shell.
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "seed.js"), "export const value = 'seed';\n");
+  run("git", ["add", "seed.js"], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  // Untracked binary file: NUL bytes make isProbablyText() false.
+  fs.writeFileSync(path.join(cwd, "blob.bin"), Buffer.from([0, 1, 2, 0, 3, 4, 0]));
+
+  const target = resolveReviewTarget(cwd, {});
+  const context = collectReviewContext(cwd, target);
+
+  assert.equal(context.fileCount, 1);
+  assert.equal(context.inputMode, "self-collect",
+    "a binary untracked file must NOT be inlined; its contents are skipped in the embedded prompt");
+});
+
+test("collectReviewContext still inlines a single small text untracked file", () => {
+  // Guard the fix from over-reaching: an untracked file whose contents ARE
+  // embeddable (small, text) must stay on the inline path.
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "seed.js"), "export const value = 'seed';\n");
+  run("git", ["add", "seed.js"], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  fs.writeFileSync(path.join(cwd, "small-new.js"), "export const v = 'INLINE_UNTRACKED_MARKER';\n");
+
+  const target = resolveReviewTarget(cwd, {});
+  const context = collectReviewContext(cwd, target);
+
+  assert.equal(context.fileCount, 1);
+  assert.equal(context.inputMode, "inline-diff");
+  assert.match(context.content, /INLINE_UNTRACKED_MARKER/);
 });
