@@ -611,7 +611,8 @@ const COMPANION_PATH = fileURLToPath(
 );
 
 function makeSelfCollectGitFixture() {
-  // 3+ changed files triggers self-collect (DEFAULT_INLINE_DIFF_MAX_FILES = 2)
+  // 6 changed files — one past the inline file cap (DEFAULT_INLINE_DIFF_MAX_FILES = 5)
+  // — forces the two-phase self-collect path.
   const root = mkdtempSync(path.join(tmpdir(), "codex-self-collect-test-"));
   spawnSync("git", ["init", "-q", "-b", "main"], { cwd: root });
   spawnSync("git", ["config", "user.email", "test@example.com"], { cwd: root });
@@ -622,7 +623,7 @@ function makeSelfCollectGitFixture() {
   spawnSync("git", ["commit", "-q", "-m", "init"], { cwd: root });
   spawnSync("git", ["checkout", "-q", "-b", "feature"], { cwd: root });
   mkdirSync(path.join(root, "src"), { recursive: true });
-  for (let i = 0; i < 5; i += 1) {
+  for (let i = 0; i < 6; i += 1) {
     writeFileSync(path.join(root, "src", `f${i}.js`), `export const v${i} = ${i};\n`);
   }
   spawnSync("git", ["add", "."], { cwd: root });

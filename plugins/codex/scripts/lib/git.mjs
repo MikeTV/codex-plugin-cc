@@ -7,11 +7,15 @@ import { formatCommandFailure, runCommand, runCommandChecked } from "./process.m
 const MAX_UNTRACKED_BYTES = 24 * 1024;
 // Inline-diff embeds full file contents into the prompt and pins outputSchema
 // on a single turn — there is no recovery if the model wants to investigate
-// before producing the verdict. Keep this path narrow: only single-file
-// reviews of small diffs use it. Anything larger falls through to the
-// two-phase self-collect path which can tolerate exploratory turns.
-const DEFAULT_INLINE_DIFF_MAX_FILES = 1;
-const DEFAULT_INLINE_DIFF_MAX_BYTES = 256 * 1024;
+// before producing the verdict. The failure mode (model emits a `{"cmd": ...}`
+// recon stub instead of the review JSON) is driven by embed SIZE, not file
+// count: it was first seen on a ~100 KB embed. So the byte cap — not the file
+// count — is the real guard. Admit small multi-file diffs (the common everyday
+// review) onto the cheap single-turn path; route large embeds to the two-phase
+// self-collect path, which tolerates exploratory recon turns. The inline prompt
+// also explicitly forbids the recon-stub anti-pattern as a second line of defence.
+const DEFAULT_INLINE_DIFF_MAX_FILES = 5;
+const DEFAULT_INLINE_DIFF_MAX_BYTES = 64 * 1024;
 
 function git(cwd, args, options = {}) {
   return runCommand("git", args, { cwd, ...options });

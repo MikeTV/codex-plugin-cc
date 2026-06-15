@@ -86,26 +86,50 @@ test("collectReviewContext keeps inline diffs for tiny adversarial reviews", () 
   assert.match(context.content, /INLINE_MARKER/);
 });
 
-test("collectReviewContext routes 2-file changes to self-collect (inline cap is 1)", () => {
-  // Regression guard: a 2-file change used to slip into inline-diff because
-  // the cap was 2, embedding both files into a single-turn schema-pinned
-  // prompt — and the model often responded with a tool-call stub instead
-  // of the review JSON. Two files now go through the two-phase self-collect
-  // path which tolerates exploratory turns.
+test("collectReviewContext keeps small multi-file diffs on the inline path", () => {
+  // The inline file cap is 5: small everyday multi-file reviews take the cheap
+  // single-turn path rather than the expensive two-phase self-collect loop.
   const cwd = makeTempDir();
   initGitRepo(cwd);
   fs.writeFileSync(path.join(cwd, "seed.js"), "export const value = 'seed';\n");
   run("git", ["add", "seed.js"], { cwd });
   run("git", ["commit", "-m", "init"], { cwd });
-  fs.writeFileSync(path.join(cwd, "doc-one.md"), "# planning doc\n".repeat(50));
-  fs.writeFileSync(path.join(cwd, "doc-two.md"), "# spec doc\n".repeat(50));
+  fs.writeFileSync(path.join(cwd, "doc-one.md"), "# planning doc\n".repeat(5));
+  fs.writeFileSync(path.join(cwd, "doc-two.md"), "# spec doc\n".repeat(5));
 
   const target = resolveReviewTarget(cwd, {});
   const context = collectReviewContext(cwd, target);
 
   assert.equal(context.fileCount, 2);
+  assert.equal(context.inputMode, "inline-diff",
+    "a small 2-file change is under both caps and must take the cheap inline path");
+});
+
+test("collectReviewContext routes large multi-file embeds to self-collect (byte cap guards the recon-stub bug)", () => {
+  // Regression guard for the original bug: a multi-file change whose embedded
+  // contents are large (~100 KB drove the model to emit a `{"cmd": ...}` recon
+  // stub on the no-recovery single turn). With the file cap raised to 5, the
+  // byte cap — not the file count — is what must keep large embeds off the
+  // inline path.
+  const cwd = makeTempDir();
+  initGitRepo(cwd);
+  fs.writeFileSync(path.join(cwd, "a.js"), "export const value = 'seed';\n");
+  fs.writeFileSync(path.join(cwd, "b.js"), "export const value = 'seed';\n");
+  run("git", ["add", "a.js", "b.js"], { cwd });
+  run("git", ["commit", "-m", "init"], { cwd });
+  // Two files, ~72 KB of changed lines each → combined diff far exceeds the
+  // 64 KB inline byte cap even though the file count (2) is under the file cap.
+  fs.writeFileSync(path.join(cwd, "a.js"), "// large doc line A\n".repeat(4000));
+  fs.writeFileSync(path.join(cwd, "b.js"), "// large doc line B\n".repeat(4000));
+
+  const target = resolveReviewTarget(cwd, {});
+  const context = collectReviewContext(cwd, target);
+
+  assert.equal(context.fileCount, 2);
+  assert.ok(context.diffBytes > 64 * 1024,
+    "diff must exceed the inline byte cap for this guard to be meaningful");
   assert.equal(context.inputMode, "self-collect",
-    "2-file changes must NOT be inlined; they hit the schema-pinned single-turn bug otherwise");
+    "a large multi-file embed must NOT be inlined; it hits the schema-pinned single-turn recon-stub bug otherwise");
 });
 
 test("collectReviewContext skips untracked directories in working tree review", () => {
@@ -144,23 +168,26 @@ test("collectReviewContext skips broken untracked symlinks instead of crashing",
 test("collectReviewContext falls back to lightweight context for larger adversarial reviews", () => {
   const cwd = makeTempDir();
   initGitRepo(cwd);
-  for (const name of ["a.js", "b.js", "c.js"]) {
+  const names = ["a.js", "b.js", "c.js", "d.js", "e.js", "f.js"];
+  for (const name of names) {
     fs.writeFileSync(path.join(cwd, name), `export const value = "${name}-v1";\n`);
   }
-  run("git", ["add", "a.js", "b.js", "c.js"], { cwd });
+  run("git", ["add", ...names], { cwd });
   run("git", ["commit", "-m", "init"], { cwd });
-  fs.writeFileSync(path.join(cwd, "a.js"), 'export const value = "SELF_COLLECT_MARKER_A";\n');
-  fs.writeFileSync(path.join(cwd, "b.js"), 'export const value = "SELF_COLLECT_MARKER_B";\n');
-  fs.writeFileSync(path.join(cwd, "c.js"), 'export const value = "SELF_COLLECT_MARKER_C";\n');
+  const markers = ["A", "B", "C", "D", "E", "F"];
+  names.forEach((name, i) => {
+    fs.writeFileSync(path.join(cwd, name), `export const value = "SELF_COLLECT_MARKER_${markers[i]}";\n`);
+  });
 
   const target = resolveReviewTarget(cwd, {});
   const context = collectReviewContext(cwd, target);
 
+  // Six changed files exceeds the inline file cap (5) → self-collect.
   assert.equal(context.inputMode, "self-collect");
-  assert.equal(context.fileCount, 3);
+  assert.equal(context.fileCount, 6);
   assert.match(context.collectionGuidance, /lightweight summary/i);
   assert.match(context.collectionGuidance, /read-only git commands/i);
-  assert.doesNotMatch(context.content, /SELF_COLLECT_MARKER_[ABC]/);
+  assert.doesNotMatch(context.content, /SELF_COLLECT_MARKER_[A-F]/);
   assert.match(context.content, /## Changed Files/);
 });
 
@@ -185,21 +212,25 @@ test("collectReviewContext falls back to lightweight context for oversized singl
 test("collectReviewContext keeps untracked file content in lightweight working tree context", () => {
   const cwd = makeTempDir();
   initGitRepo(cwd);
-  for (const name of ["a.js", "b.js"]) {
+  const tracked = ["a.js", "b.js", "c.js", "d.js", "e.js"];
+  for (const name of tracked) {
     fs.writeFileSync(path.join(cwd, name), `export const value = "${name}-v1";\n`);
   }
-  run("git", ["add", "a.js", "b.js"], { cwd });
+  run("git", ["add", ...tracked], { cwd });
   run("git", ["commit", "-m", "init"], { cwd });
-  fs.writeFileSync(path.join(cwd, "a.js"), 'export const value = "TRACKED_MARKER_A";\n');
-  fs.writeFileSync(path.join(cwd, "b.js"), 'export const value = "TRACKED_MARKER_B";\n');
+  // Five tracked edits + one untracked file = six changed files, past the inline
+  // file cap (5) → self-collect, so we can assert the lightweight rendering.
+  tracked.forEach((name, i) => {
+    fs.writeFileSync(path.join(cwd, name), `export const value = "TRACKED_MARKER_${i}";\n`);
+  });
   fs.writeFileSync(path.join(cwd, "new-risk.js"), 'export const value = "UNTRACKED_RISK_MARKER";\n');
 
   const target = resolveReviewTarget(cwd, {});
   const context = collectReviewContext(cwd, target);
 
   assert.equal(context.inputMode, "self-collect");
-  assert.equal(context.fileCount, 3);
-  assert.doesNotMatch(context.content, /TRACKED_MARKER_[AB]/);
+  assert.equal(context.fileCount, 6);
+  assert.doesNotMatch(context.content, /TRACKED_MARKER_\d/);
   assert.match(context.content, /## Untracked Files/);
   assert.match(context.content, /UNTRACKED_RISK_MARKER/);
 });
