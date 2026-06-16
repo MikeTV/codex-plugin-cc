@@ -1197,7 +1197,13 @@ export async function runAppServerTurn(cwd, options = {}) {
   });
 }
 
-const DEFAULT_MAX_INVESTIGATION_TURNS = 10;
+// Empirically, deep reviews almost never converge before the ceiling — the
+// skeptic always finds one more command to run — so the ceiling IS the de facto
+// runtime. Cap it at 5 to roughly halve worst-case cost/quota. Raise per-run
+// with --max-investigation-turns. (The real fix is the stopping protocol: a
+// continuation cue the model can answer "stop" to, plus permission to land on
+// "no material findings" — deferred.)
+const DEFAULT_MAX_INVESTIGATION_TURNS = 5;
 const INVESTIGATION_CONTINUATION_CUE = "Continue your investigation.";
 
 export async function runAppServerInvestigation(cwd, options = {}) {
