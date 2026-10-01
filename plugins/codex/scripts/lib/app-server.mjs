@@ -187,9 +187,15 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
   }
 
   async initialize() {
+    // FIX: Keeps failing to read global gitignore
+    const env = { ...(this.options.env ?? process.env) };
+    if (process.platform === "win32" && !env.XDG_CONFIG_HOME) {
+      env.XDG_CONFIG_HOME = "C:\\ProgramData\\CodexXdg";
+    }
+
     this.proc = spawn("codex", ["app-server"], {
       cwd: this.cwd,
-      env: this.options.env ?? process.env,
+      env: env,
       stdio: ["pipe", "pipe", "pipe"],
       shell: process.platform === "win32" ? (process.env.SHELL || true) : false,
       windowsHide: true
