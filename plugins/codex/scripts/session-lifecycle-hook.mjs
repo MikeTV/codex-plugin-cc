@@ -17,6 +17,8 @@ import { loadState, resolveStateFile, updateState } from "./lib/state.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
+// hooks.json gives SessionEnd 5 s, and broker teardown still has to run after the state update.
+const SESSION_END_LOCK_TIMEOUT_MS = 3_000;
 const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
 
 function readHookInput() {
@@ -67,9 +69,13 @@ function cleanupSessionJobs(cwd, sessionId) {
     }
   }
 
-  updateState(workspaceRoot, (state) => {
-    state.jobs = state.jobs.filter((job) => job.sessionId !== sessionId);
-  });
+  updateState(
+    workspaceRoot,
+    (state) => {
+      state.jobs = state.jobs.filter((job) => job.sessionId !== sessionId);
+    },
+    { lockTimeoutMs: SESSION_END_LOCK_TIMEOUT_MS }
+  );
 }
 
 function handleSessionStart(input) {

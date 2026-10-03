@@ -13,13 +13,14 @@ const CLAUDE_PLUGINS_DATA_DIR = path.join(os.homedir(), ".claude", "plugins", "d
 const STATE_FILE_NAME = "state.json";
 const JOBS_DIR_NAME = "jobs";
 const MAX_JOBS = 50;
-// A holder keeps the lock only for one read-modify-write of state.json, which takes milliseconds.
-// A lock older than LOCK_STALE_MS belongs to a process that died; it is shorter than the wait timeout so waiters recover from it.
-// The timeout stays well under the 5 s SessionEnd hook timeout in hooks.json, so the hook still reaches its teardown.
+// The lock file holds the holder's pid. A lock is stale when that process is dead, so a slow live holder is never
+// broken. The mtime limit only covers an empty lock (holder died between create and write) and a reused pid.
+// Jobs write on every progress event, so parallel jobs on a loaded machine can wait seconds (a 3 s limit failed in tests).
+// The SessionEnd hook passes its own shorter limit to stay inside its 5 s timeout in hooks.json.
 // Known gap, accepted: if two writers find the same stale lock at the same moment, the second can remove the first's new lock.
-// That needs a crash inside a millisecond hold plus a simultaneous collision, and costs one job update, as before the lock existed.
-const LOCK_STALE_MS = 2_000;
-const LOCK_TIMEOUT_MS = 3_000;
+// That needs a holder to die inside a millisecond hold plus a simultaneous collision, and costs one job update.
+const LOCK_STALE_BACKSTOP_MS = 60_000;
+const LOCK_TIMEOUT_MS = 30_000;
 const LOCK_RETRY_MS = 25;
 
 function nowIso() {
@@ -264,37 +265,75 @@ function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-function isStaleLock(lockFile) {
+// On Windows a lock file that another process just deleted stays "delete pending" for a moment.
+// Opening or reading it then fails with EPERM or EACCES instead of EEXIST or ENOENT.
+const LOCK_BUSY_CODES = new Set(["EEXIST", "EPERM", "EACCES"]);
+
+function isProcessAlive(pid) {
   try {
-    return Date.now() - fs.statSync(lockFile).mtimeMs > LOCK_STALE_MS;
+    process.kill(pid, 0);
+    return true;
   } catch (error) {
-    if (error.code === "ENOENT") {
+    // EPERM: the process exists but belongs to another user.
+    return error.code === "EPERM";
+  }
+}
+
+function isStaleLock(lockFile) {
+  let content;
+  let mtimeMs;
+  try {
+    content = fs.readFileSync(lockFile, "utf8");
+    mtimeMs = fs.statSync(lockFile).mtimeMs;
+  } catch (error) {
+    if (error.code === "ENOENT" || LOCK_BUSY_CODES.has(error.code)) {
       return false;
     }
     throw error;
   }
+  if (Date.now() - mtimeMs > LOCK_STALE_BACKSTOP_MS) {
+    return true;
+  }
+  // Empty content: the holder is between create and write, so treat it as live.
+  const pid = Number.parseInt(content, 10);
+  return Number.isInteger(pid) && pid > 0 && !isProcessAlive(pid);
+}
+
+function createLockFile(lockFile) {
+  const fd = fs.openSync(lockFile, "wx");
+  try {
+    fs.writeSync(fd, String(process.pid));
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function removeLockFile(lockFile) {
+  fs.rmSync(lockFile, { force: true, maxRetries: 5, retryDelay: 20 });
 }
 
 // Companion processes running in parallel in one workspace would otherwise lose each other's job updates.
-function withStateLock(cwd, fn) {
+function withStateLock(cwd, fn, timeoutMs) {
   ensureStateDir(cwd);
   const lockFile = `${resolveStateFile(cwd)}.lock`;
-  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
+  let lastErrorCode;
   for (;;) {
     try {
-      fs.closeSync(fs.openSync(lockFile, "wx"));
+      createLockFile(lockFile);
       break;
     } catch (error) {
-      if (error.code !== "EEXIST") {
+      if (!LOCK_BUSY_CODES.has(error.code)) {
         throw error;
       }
+      lastErrorCode = error.code;
     }
     if (isStaleLock(lockFile)) {
-      fs.rmSync(lockFile, { force: true });
+      removeLockFile(lockFile);
       continue;
     }
     if (Date.now() > deadline) {
-      throw new Error(`Timed out after ${LOCK_TIMEOUT_MS} ms waiting for the state lock ${lockFile}.`);
+      throw new Error(`Timed out after ${timeoutMs} ms waiting for the state lock ${lockFile} (last error ${lastErrorCode}).`);
     }
     sleepSync(LOCK_RETRY_MS);
   }
@@ -302,16 +341,16 @@ function withStateLock(cwd, fn) {
   try {
     return fn();
   } finally {
-    fs.rmSync(lockFile, { force: true });
+    removeLockFile(lockFile);
   }
 }
 
-export function updateState(cwd, mutate) {
+export function updateState(cwd, mutate, { lockTimeoutMs = LOCK_TIMEOUT_MS } = {}) {
   return withStateLock(cwd, () => {
     const state = loadState(cwd);
     mutate(state);
     return saveState(cwd, state);
-  });
+  }, lockTimeoutMs);
 }
 
 export function generateJobId(prefix = "job") {
