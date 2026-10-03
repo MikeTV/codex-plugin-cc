@@ -890,8 +890,8 @@ const REVIEW_IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp
 
 // Attaching the images to the turn lets the model see them. A reviewer told only the paths
 // tends to measure pixels with shell commands, which cannot judge layout.
-function listReviewImages(imageDir) {
-  const dir = path.resolve(String(imageDir));
+function listReviewImages(cwd, imageDir) {
+  const dir = path.resolve(cwd, String(imageDir));
   if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
     throw new Error(`--image-dir is not a directory: ${dir}`);
   }
@@ -919,7 +919,6 @@ async function handleReviewCommand(argv, config) {
   if (config.reviewName === "Review" && (selfCollect || options["image-dir"] !== undefined)) {
     throw new Error("--self-collect and --image-dir apply only to adversarial-review.");
   }
-  const imagePaths = options["image-dir"] === undefined ? [] : listReviewImages(options["image-dir"]);
 
   const rawMaxTurns = options["max-investigation-turns"];
   let maxInvestigationTurns;
@@ -945,6 +944,7 @@ async function handleReviewCommand(argv, config) {
   const effort = normalizeReasoningEffort(options.effort);
 
   const cwd = resolveCommandCwd(options);
+  const imagePaths = options["image-dir"] === undefined ? [] : listReviewImages(cwd, options["image-dir"]);
   const workspaceRoot = resolveCommandWorkspace(options);
   const focusText = positionals.join(" ").trim();
   const target = resolveReviewTarget(cwd, {

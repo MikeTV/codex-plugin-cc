@@ -14,11 +14,13 @@ const STATE_FILE_NAME = "state.json";
 const JOBS_DIR_NAME = "jobs";
 const MAX_JOBS = 50;
 // The lock file holds the holder's pid. A lock is stale when that process is dead, so a slow live holder is never
-// broken. The mtime limit only covers an empty lock (holder died between create and write) and a reused pid.
+// broken. Two mtime limits cover the cases a pid cannot: an empty lock (holder died between create and write; the
+// limit stays under the SessionEnd wait) and a reused pid.
 // Jobs write on every progress event, so parallel jobs on a loaded machine can wait seconds (a 3 s limit failed in tests).
 // The SessionEnd hook passes its own shorter limit to stay inside its 5 s timeout in hooks.json.
 // Known gap, accepted: if two writers find the same stale lock at the same moment, the second can remove the first's new lock.
 // That needs a holder to die inside a millisecond hold plus a simultaneous collision, and costs one job update.
+const LOCK_EMPTY_STALE_MS = 2_000;
 const LOCK_STALE_BACKSTOP_MS = 60_000;
 const LOCK_TIMEOUT_MS = 30_000;
 const LOCK_RETRY_MS = 25;
@@ -291,12 +293,16 @@ function isStaleLock(lockFile) {
     }
     throw error;
   }
-  if (Date.now() - mtimeMs > LOCK_STALE_BACKSTOP_MS) {
+  const ageMs = Date.now() - mtimeMs;
+  if (ageMs > LOCK_STALE_BACKSTOP_MS) {
     return true;
   }
-  // Empty content: the holder is between create and write, so treat it as live.
   const pid = Number.parseInt(content, 10);
-  return Number.isInteger(pid) && pid > 0 && !isProcessAlive(pid);
+  if (!Number.isInteger(pid) || pid <= 0) {
+    // Empty: the holder is between create and write, or died there.
+    return ageMs > LOCK_EMPTY_STALE_MS;
+  }
+  return !isProcessAlive(pid);
 }
 
 function createLockFile(lockFile) {

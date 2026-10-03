@@ -1114,9 +1114,10 @@ test("--self-collect forces the investigation turns on a diff small enough to in
   }
 });
 
-test("--image-dir attaches the images to the first investigation turn only", async () => {
+test("--image-dir resolves against --cwd and attaches the images to the first investigation turn only", async () => {
   const cwd = makeInlineGitFixture();
-  const imageDir = mkdtempSync(path.join(tmpdir(), "codex-review-images-"));
+  const imageDir = path.join(cwd, "shots");
+  mkdirSync(imageDir);
   writeFileSync(path.join(imageDir, "b.png"), "png");
   writeFileSync(path.join(imageDir, "a.JPG"), "jpg");
   writeFileSync(path.join(imageDir, "notes.txt"), "not an image");
@@ -1135,7 +1136,7 @@ test("--image-dir attaches the images to the first investigation turn only", asy
     });
 
     const result = runCompanion(
-      ["adversarial-review", "--base", "main", "--scope", "branch", "--cwd", cwd, "--self-collect", "--image-dir", imageDir, "--json"],
+      ["adversarial-review", "--base", "main", "--scope", "branch", "--cwd", cwd, "--self-collect", "--image-dir", "shots", "--json"],
       fake.env
     );
 

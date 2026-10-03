@@ -95,11 +95,11 @@ test("a fresh lock held by a dead process is cleared at once", () => {
   assert.ok(elapsedMs < 5_000, `took ${elapsedMs} ms`);
 });
 
-test("an empty lock older than the backstop is cleared", () => {
+test("an empty lock is cleared after a few seconds, inside the SessionEnd wait", () => {
   upsertPastLeftoverLock((lockFile) => {
     fs.writeFileSync(lockFile, "");
-    const twoMinutesAgo = new Date(Date.now() - 120_000);
-    fs.utimesSync(lockFile, twoMinutesAgo, twoMinutesAgo);
+    const threeSecondsAgo = new Date(Date.now() - 3_000);
+    fs.utimesSync(lockFile, threeSecondsAgo, threeSecondsAgo);
   });
 });
 
