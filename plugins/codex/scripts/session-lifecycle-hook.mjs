@@ -13,7 +13,7 @@ import {
   sendBrokerShutdown,
   teardownBrokerSession
 } from "./lib/broker-lifecycle.mjs";
-import { loadState, resolveStateFile, saveState } from "./lib/state.mjs";
+import { loadState, resolveStateFile, updateState } from "./lib/state.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
@@ -49,13 +49,13 @@ function cleanupSessionJobs(cwd, sessionId) {
     return;
   }
 
-  const state = loadState(workspaceRoot);
-  const removedJobs = state.jobs.filter((job) => job.sessionId === sessionId);
-  if (removedJobs.length === 0) {
+  const sessionJobs = loadState(workspaceRoot).jobs.filter((job) => job.sessionId === sessionId);
+  if (sessionJobs.length === 0) {
     return;
   }
 
-  for (const job of removedJobs) {
+  // Stop the workers before their records go: a live worker's next progress update would recreate its record.
+  for (const job of sessionJobs) {
     const stillRunning = job.status === "queued" || job.status === "running";
     if (!stillRunning) {
       continue;
@@ -67,9 +67,8 @@ function cleanupSessionJobs(cwd, sessionId) {
     }
   }
 
-  saveState(workspaceRoot, {
-    ...state,
-    jobs: state.jobs.filter((job) => job.sessionId !== sessionId)
+  updateState(workspaceRoot, (state) => {
+    state.jobs = state.jobs.filter((job) => job.sessionId !== sessionId);
   });
 }
 
@@ -99,16 +98,20 @@ async function handleSessionEnd(input) {
     await sendBrokerShutdown(brokerEndpoint);
   }
 
-  cleanupSessionJobs(cwd, input.session_id || process.env[SESSION_ID_ENV]);
-  teardownBrokerSession({
-    endpoint: brokerEndpoint,
-    pidFile,
-    logFile,
-    sessionDir,
-    pid,
-    killProcess: terminateProcessTree
-  });
-  clearBrokerSession(cwd);
+  // A state-lock timeout in cleanupSessionJobs must not skip the broker teardown.
+  try {
+    cleanupSessionJobs(cwd, input.session_id || process.env[SESSION_ID_ENV]);
+  } finally {
+    teardownBrokerSession({
+      endpoint: brokerEndpoint,
+      pidFile,
+      logFile,
+      sessionDir,
+      pid,
+      killProcess: terminateProcessTree
+    });
+    clearBrokerSession(cwd);
+  }
 }
 
 async function main() {

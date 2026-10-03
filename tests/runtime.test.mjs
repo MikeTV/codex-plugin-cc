@@ -157,6 +157,60 @@ test("review renders a no-findings result from app-server review/start", () => {
   assert.match(result.stdout, /No material issues found/);
 });
 
+function setUpReviewRepo() {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "app.js"), "export const value = 1;\n");
+  run("git", ["add", "app.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "app.js"), "export const value = 2;\n");
+  return { repo, binDir };
+}
+
+function readLastThreadStartParams(binDir) {
+  return JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8")).lastThreadStartParams;
+}
+
+test("review --effort sets the reasoning effort on the review thread", () => {
+  const { repo, binDir } = setUpReviewRepo();
+
+  const result = run("node", [SCRIPT, "review", "--effort", "High"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(readLastThreadStartParams(binDir).config, { model_reasoning_effort: "high" });
+  assert.match(result.stderr, /Thread ready \([^)]*, effort high\)/);
+});
+
+test("review without --effort leaves the effort to Codex config", () => {
+  const { repo, binDir } = setUpReviewRepo();
+
+  const result = run("node", [SCRIPT, "review"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readLastThreadStartParams(binDir).config, undefined);
+});
+
+test("review rejects an unknown --effort before it starts Codex", () => {
+  const { repo, binDir } = setUpReviewRepo();
+
+  const result = run("node", [SCRIPT, "review", "--effort", "extreme"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Unsupported reasoning effort "extreme"/);
+  assert.equal(fs.existsSync(path.join(binDir, "fake-codex-state.json")), false);
+});
+
 test("task runs when the active provider does not require OpenAI login", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

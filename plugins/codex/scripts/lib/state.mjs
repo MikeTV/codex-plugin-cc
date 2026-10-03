@@ -13,6 +13,14 @@ const CLAUDE_PLUGINS_DATA_DIR = path.join(os.homedir(), ".claude", "plugins", "d
 const STATE_FILE_NAME = "state.json";
 const JOBS_DIR_NAME = "jobs";
 const MAX_JOBS = 50;
+// A holder keeps the lock only for one read-modify-write of state.json, which takes milliseconds.
+// A lock older than LOCK_STALE_MS belongs to a process that died; it is shorter than the wait timeout so waiters recover from it.
+// The timeout stays well under the 5 s SessionEnd hook timeout in hooks.json, so the hook still reaches its teardown.
+// Known gap, accepted: if two writers find the same stale lock at the same moment, the second can remove the first's new lock.
+// That needs a crash inside a millisecond hold plus a simultaneous collision, and costs one job update, as before the lock existed.
+const LOCK_STALE_MS = 2_000;
+const LOCK_TIMEOUT_MS = 3_000;
+const LOCK_RETRY_MS = 25;
 
 function nowIso() {
   return new Date().toISOString();
@@ -252,10 +260,58 @@ export function saveState(cwd, state) {
   return nextState;
 }
 
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function isStaleLock(lockFile) {
+  try {
+    return Date.now() - fs.statSync(lockFile).mtimeMs > LOCK_STALE_MS;
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+// Companion processes running in parallel in one workspace would otherwise lose each other's job updates.
+function withStateLock(cwd, fn) {
+  ensureStateDir(cwd);
+  const lockFile = `${resolveStateFile(cwd)}.lock`;
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  for (;;) {
+    try {
+      fs.closeSync(fs.openSync(lockFile, "wx"));
+      break;
+    } catch (error) {
+      if (error.code !== "EEXIST") {
+        throw error;
+      }
+    }
+    if (isStaleLock(lockFile)) {
+      fs.rmSync(lockFile, { force: true });
+      continue;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`Timed out after ${LOCK_TIMEOUT_MS} ms waiting for the state lock ${lockFile}.`);
+    }
+    sleepSync(LOCK_RETRY_MS);
+  }
+
+  try {
+    return fn();
+  } finally {
+    fs.rmSync(lockFile, { force: true });
+  }
+}
+
 export function updateState(cwd, mutate) {
-  const state = loadState(cwd);
-  mutate(state);
-  return saveState(cwd, state);
+  return withStateLock(cwd, () => {
+    const state = loadState(cwd);
+    mutate(state);
+    return saveState(cwd, state);
+  });
 }
 
 export function generateJobId(prefix = "job") {

@@ -10,9 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Write-capable `task` runs (the `/codex:rescue` path) can now pass `approval_policy` through from Codex config**, mirroring the existing `sandbox_mode` passthrough. `resolveCodexAutoApprovalPolicy(workspaceRoot)` reads `approval_policy` from project-level `.codex/config.toml` then user-level `~/.codex/config.toml`, but only engages when `approvals_reviewer = "auto_review"` is also configured — headless runs have no human to answer approval prompts, so escalations must be answerable by Codex's automatic reviewer or the plugin keeps its hardcoded `approvalPolicy: "never"`. Prompts the auto reviewer rejects stay rejected. Review and adversarial-review threads are unaffected and remain pinned to `read-only` + `never`. Read-only task runs (no `--write`) also keep `never` so a non-write rescue cannot escalate into writes.
+- **`review` and `adversarial-review` accept `--effort`.** Before this change, both commands ignored the flag and used `model_reasoning_effort` from `config.toml`. The `review/start` request has no effort field, so the companion now sets the effort on the thread when the thread starts (`config.model_reasoning_effort`). Adversarial review also sends it on each turn, as `task` already did. The "Thread ready" progress line shows the effort that Codex reports, so you can confirm the effort that was used.
 
 ### Fixed
 
+- **Parallel companion processes in one workspace no longer lose each other's job updates.** `updateState` now holds a lock file (`state.json.lock`) for each read-modify-write. Without the lock, four parallel writers kept 10 of 40 jobs in a test. A lock older than 2 seconds belongs to a process that died, and the next writer removes it. A writer that cannot get the lock in 3 seconds fails with an error, which keeps the SessionEnd hook inside its 5-second limit. The SessionEnd hook now writes through `updateState` as well, and it stops the session workers before it removes their records.
 - `tests/codex-config.test.mjs` faked the home directory by setting `HOME` only; `os.homedir()` reads `USERPROFILE` on Windows, so the user-level-config tests read the developer's real `~/.codex/config.toml` and failed. The tests now set both variables.
 
 ## [1.4.0] - 2026-05-23

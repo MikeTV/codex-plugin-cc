@@ -3,9 +3,91 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 
 import { makeTempDir } from "./helpers.mjs";
-import { resolveJobFile, resolveJobLogFile, resolveStateDir, resolveStateFile, saveState } from "../plugins/codex/scripts/lib/state.mjs";
+import {
+  listJobs,
+  resolveJobFile,
+  resolveJobLogFile,
+  resolveStateDir,
+  resolveStateFile,
+  saveState,
+  upsertJob
+} from "../plugins/codex/scripts/lib/state.mjs";
+
+const STATE_MODULE_URL = new URL("../plugins/codex/scripts/lib/state.mjs", import.meta.url).href;
+
+function runChild(script, env) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script], { env, stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`child exited ${code}: ${stderr}`))));
+  });
+}
+
+test("parallel processes do not lose each other's job updates", async () => {
+  const workspace = makeTempDir();
+  const pluginDataDir = makeTempDir();
+  const env = { ...process.env, CLAUDE_PLUGIN_DATA: pluginDataDir };
+  const workers = 4;
+  const jobsPerWorker = 10;
+
+  await Promise.all(
+    Array.from({ length: workers }, (_, worker) =>
+      runChild(
+        `import { upsertJob } from ${JSON.stringify(STATE_MODULE_URL)};
+         for (let i = 0; i < ${jobsPerWorker}; i += 1) {
+           upsertJob(${JSON.stringify(workspace)}, { id: "w${worker}-" + i, status: "running" });
+         }`,
+        env
+      )
+    )
+  );
+
+  const previousPluginDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  process.env.CLAUDE_PLUGIN_DATA = pluginDataDir;
+  try {
+    assert.equal(listJobs(workspace).length, workers * jobsPerWorker);
+    assert.equal(fs.existsSync(`${resolveStateFile(workspace)}.lock`), false);
+  } finally {
+    if (previousPluginDataDir == null) {
+      delete process.env.CLAUDE_PLUGIN_DATA;
+    } else {
+      process.env.CLAUDE_PLUGIN_DATA = previousPluginDataDir;
+    }
+  }
+});
+
+test("a lock left by a dead process is cleared", () => {
+  const workspace = makeTempDir();
+  const pluginDataDir = makeTempDir();
+  const previousPluginDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  process.env.CLAUDE_PLUGIN_DATA = pluginDataDir;
+
+  try {
+    const lockFile = `${resolveStateFile(workspace)}.lock`;
+    fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+    fs.writeFileSync(lockFile, "");
+    const oneMinuteAgo = new Date(Date.now() - 60_000);
+    fs.utimesSync(lockFile, oneMinuteAgo, oneMinuteAgo);
+
+    upsertJob(workspace, { id: "job-1", status: "running" });
+
+    assert.deepEqual(listJobs(workspace).map((job) => job.id), ["job-1"]);
+    assert.equal(fs.existsSync(lockFile), false);
+  } finally {
+    if (previousPluginDataDir == null) {
+      delete process.env.CLAUDE_PLUGIN_DATA;
+    } else {
+      process.env.CLAUDE_PLUGIN_DATA = previousPluginDataDir;
+    }
+  }
+});
 
 test("resolveStateDir falls back to a HOME-anchored directory when CLAUDE_PLUGIN_DATA is unset", () => {
   const workspace = makeTempDir();

@@ -109,8 +109,16 @@ function buildThreadParams(cwd, options = {}) {
     approvalPolicy: options.approvalPolicy ?? "never",
     sandbox: options.sandbox ?? "read-only",
     serviceName: SERVICE_NAME,
-    ephemeral: options.ephemeral ?? true
+    ephemeral: options.ephemeral ?? true,
+    // review/start takes no effort, so a review thread gets it here or inherits model_reasoning_effort from config.toml.
+    ...(options.effort ? { config: { model_reasoning_effort: options.effort } } : {})
   };
+}
+
+function describeThreadReady(threadId, response) {
+  return response.reasoningEffort
+    ? `Thread ready (${threadId}, effort ${response.reasoningEffort}).`
+    : `Thread ready (${threadId}).`;
 }
 
 /** @returns {ThreadResumeParams} */
@@ -1076,12 +1084,13 @@ export async function runAppServerReview(cwd, options = {}) {
     emitProgress(options.onProgress, "Starting Codex review thread.", "starting");
     const thread = await startThread(client, cwd, {
       model: options.model,
+      effort: options.effort,
       sandbox: "read-only",
       ephemeral: true,
       threadName: options.threadName
     });
     const sourceThreadId = thread.thread.id;
-    emitProgress(options.onProgress, `Thread ready (${sourceThreadId}).`, "starting", {
+    emitProgress(options.onProgress, describeThreadReady(sourceThreadId, thread), "starting", {
       threadId: sourceThreadId
     });
     const delivery = options.delivery ?? "inline";
@@ -1136,6 +1145,7 @@ export async function runAppServerTurn(cwd, options = {}) {
 
   return withAppServer(cwd, async (client) => {
     let threadId;
+    let readyMessage;
 
     if (options.resumeThreadId) {
       emitProgress(options.onProgress, `Resuming thread ${options.resumeThreadId}.`, "starting");
@@ -1146,19 +1156,22 @@ export async function runAppServerTurn(cwd, options = {}) {
         ephemeral: false
       });
       threadId = response.thread.id;
+      readyMessage = describeThreadReady(threadId, response);
     } else {
       emitProgress(options.onProgress, "Starting Codex task thread.", "starting");
       const response = await startThread(client, cwd, {
         model: options.model,
+        effort: options.effort,
         approvalPolicy: options.approvalPolicy,
         sandbox: options.sandbox,
         ephemeral: options.persistThread ? false : true,
         threadName: options.persistThread ? options.threadName : options.threadName ?? null
       });
       threadId = response.thread.id;
+      readyMessage = describeThreadReady(threadId, response);
     }
 
-    emitProgress(options.onProgress, `Thread ready (${threadId}).`, "starting", {
+    emitProgress(options.onProgress, readyMessage, "starting", {
       threadId
     });
 
@@ -1233,12 +1246,13 @@ export async function runAppServerInvestigation(cwd, options = {}) {
     emitProgress(options.onProgress, "Starting Codex investigation thread.", "starting");
     const startResponse = await startThread(client, cwd, {
       model: options.model,
+      effort: options.effort,
       sandbox,
       ephemeral: true,
       threadName: null
     });
     const threadId = startResponse.thread.id;
-    emitProgress(options.onProgress, `Thread ready (${threadId}).`, "starting", { threadId });
+    emitProgress(options.onProgress, describeThreadReady(threadId, startResponse), "starting", { threadId });
 
     let turnCount = 0;
     let truncated = false;
