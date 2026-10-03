@@ -98,16 +98,20 @@ async function handleSessionEnd(input) {
     await sendBrokerShutdown(brokerEndpoint);
   }
 
-  cleanupSessionJobs(cwd, input.session_id || process.env[SESSION_ID_ENV]);
-  teardownBrokerSession({
-    endpoint: brokerEndpoint,
-    pidFile,
-    logFile,
-    sessionDir,
-    pid,
-    killProcess: terminateProcessTree
-  });
-  clearBrokerSession(cwd);
+  // A state-lock timeout in cleanupSessionJobs must not skip the broker teardown.
+  try {
+    cleanupSessionJobs(cwd, input.session_id || process.env[SESSION_ID_ENV]);
+  } finally {
+    teardownBrokerSession({
+      endpoint: brokerEndpoint,
+      pidFile,
+      logFile,
+      sessionDir,
+      pid,
+      killProcess: terminateProcessTree
+    });
+    clearBrokerSession(cwd);
+  }
 }
 
 async function main() {
