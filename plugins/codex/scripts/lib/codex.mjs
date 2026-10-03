@@ -133,8 +133,11 @@ function buildResumeParams(threadId, cwd, options = {}) {
 }
 
 /** @returns {UserInput[]} */
-function buildTurnInput(prompt) {
-  return [{ type: "text", text: prompt, text_elements: [] }];
+function buildTurnInput(prompt, imagePaths = []) {
+  return [
+    { type: "text", text: prompt, text_elements: [] },
+    ...imagePaths.map((imagePath) => ({ type: "localImage", path: imagePath }))
+  ];
 }
 
 function shorten(text, limit = 72) {
@@ -1186,7 +1189,7 @@ export async function runAppServerTurn(cwd, options = {}) {
       () =>
         client.request("turn/start", {
           threadId,
-          input: buildTurnInput(prompt),
+          input: buildTurnInput(prompt, options.imagePaths),
           model: options.model ?? null,
           effort: options.effort ?? null,
           outputSchema: options.outputSchema ?? null
@@ -1272,7 +1275,7 @@ export async function runAppServerInvestigation(cwd, options = {}) {
           () =>
             client.request("turn/start", {
               threadId,
-              input: buildTurnInput(promptText),
+              input: buildTurnInput(promptText, i === 1 ? options.imagePaths : []),
               model: options.model ?? null,
               effort: options.effort ?? null,
               outputSchema: null

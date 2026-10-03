@@ -84,7 +84,7 @@ function printUsage() {
       "Usage:",
       "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model>] [--effort <none|minimal|low|medium|high|xhigh>]",
-      "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model>] [--effort <none|minimal|low|medium|high|xhigh>] [focus text]",
+      "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model>] [--effort <none|minimal|low|medium|high|xhigh>] [--self-collect] [--image-dir <dir>] [focus text]",
       "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
@@ -431,7 +431,9 @@ async function executeReviewRun(request) {
     };
   }
 
-  const context = collectReviewContext(request.cwd, target);
+  // A small diff normally runs as one turn with no tool use. --self-collect forces the investigation
+  // turns, for reviews that must read files outside the diff, such as a spec or screenshots.
+  const context = collectReviewContext(request.cwd, target, request.selfCollect ? { includeDiff: false } : {});
 
   // Nothing to review. The common trigger is running on a clean working tree
   // while sitting ON the default branch: the branch comparison resolves
@@ -495,6 +497,7 @@ async function executeReviewRun(request) {
       outputSchema: readOutputSchema(REVIEW_SCHEMA),
       model: request.model,
       effort: request.effort,
+      imagePaths: request.imagePaths,
       sandbox: "read-only",
       maxInvestigationTurns: request.maxInvestigationTurns,
       turnIdleTimeoutMs: request.turnIdleTimeoutMs,
@@ -506,6 +509,7 @@ async function executeReviewRun(request) {
       prompt,
       model: request.model,
       effort: request.effort,
+      imagePaths: request.imagePaths,
       sandbox: "read-only",
       outputSchema: readOutputSchema(REVIEW_SCHEMA),
       turnIdleTimeoutMs: request.turnIdleTimeoutMs,
@@ -882,14 +886,40 @@ function enqueueBackgroundTask(cwd, job, request) {
   };
 }
 
+const REVIEW_IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
+
+// Attaching the images to the turn lets the model see them. A reviewer told only the paths
+// tends to measure pixels with shell commands, which cannot judge layout.
+function listReviewImages(imageDir) {
+  const dir = path.resolve(String(imageDir));
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+    throw new Error(`--image-dir is not a directory: ${dir}`);
+  }
+  const images = fs
+    .readdirSync(dir)
+    .filter((name) => REVIEW_IMAGE_EXTENSIONS.has(path.extname(name).toLowerCase()))
+    .sort()
+    .map((name) => path.join(dir, name));
+  if (images.length === 0) {
+    throw new Error(`--image-dir has no .png, .jpg, .jpeg, .gif, or .webp files: ${dir}`);
+  }
+  return images;
+}
+
 async function handleReviewCommand(argv, config) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["base", "scope", "model", "effort", "cwd", "max-investigation-turns", "turn-idle-timeout"],
-    booleanOptions: ["json", "background", "wait"],
+    valueOptions: ["base", "scope", "model", "effort", "cwd", "max-investigation-turns", "turn-idle-timeout", "image-dir"],
+    booleanOptions: ["json", "background", "wait", "self-collect"],
     aliasMap: {
       m: "model"
     }
   });
+
+  const selfCollect = Boolean(options["self-collect"]);
+  if (config.reviewName === "Review" && (selfCollect || options["image-dir"] !== undefined)) {
+    throw new Error("--self-collect and --image-dir apply only to adversarial-review.");
+  }
+  const imagePaths = options["image-dir"] === undefined ? [] : listReviewImages(options["image-dir"]);
 
   const rawMaxTurns = options["max-investigation-turns"];
   let maxInvestigationTurns;
@@ -941,6 +971,8 @@ async function handleReviewCommand(argv, config) {
         scope: options.scope,
         model: options.model,
         effort,
+        selfCollect,
+        imagePaths,
         focusText,
         reviewName: config.reviewName,
         maxInvestigationTurns,
