@@ -83,8 +83,8 @@ function printUsage() {
     [
       "Usage:",
       "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
-      "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
-      "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
+      "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model>] [--effort <none|minimal|low|medium|high|xhigh>]",
+      "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model>] [--effort <none|minimal|low|medium|high|xhigh>] [focus text]",
       "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
@@ -394,6 +394,7 @@ async function executeReviewRun(request) {
     const result = await runAppServerReview(request.cwd, {
       target: reviewTarget,
       model: request.model,
+      effort: request.effort,
       onProgress: request.onProgress
     });
     const payload = {
@@ -493,6 +494,7 @@ async function executeReviewRun(request) {
       finalizePrompt,
       outputSchema: readOutputSchema(REVIEW_SCHEMA),
       model: request.model,
+      effort: request.effort,
       sandbox: "read-only",
       maxInvestigationTurns: request.maxInvestigationTurns,
       turnIdleTimeoutMs: request.turnIdleTimeoutMs,
@@ -503,6 +505,7 @@ async function executeReviewRun(request) {
     result = await runAppServerTurn(context.repoRoot, {
       prompt,
       model: request.model,
+      effort: request.effort,
       sandbox: "read-only",
       outputSchema: readOutputSchema(REVIEW_SCHEMA),
       turnIdleTimeoutMs: request.turnIdleTimeoutMs,
@@ -881,7 +884,7 @@ function enqueueBackgroundTask(cwd, job, request) {
 
 async function handleReviewCommand(argv, config) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["base", "scope", "model", "cwd", "max-investigation-turns", "turn-idle-timeout"],
+    valueOptions: ["base", "scope", "model", "effort", "cwd", "max-investigation-turns", "turn-idle-timeout"],
     booleanOptions: ["json", "background", "wait"],
     aliasMap: {
       m: "model"
@@ -909,6 +912,7 @@ async function handleReviewCommand(argv, config) {
   // stalled review never hangs forever. /codex:task deliberately does NOT, so a
   // long-thinking task is not aborted; it passes no timeout to runAppServerTurn.
   const turnIdleTimeoutMs = resolveReviewTurnIdleTimeoutMs(explicitIdleTimeoutMs);
+  const effort = normalizeReasoningEffort(options.effort);
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
@@ -936,6 +940,7 @@ async function handleReviewCommand(argv, config) {
         base: options.base,
         scope: options.scope,
         model: options.model,
+        effort,
         focusText,
         reviewName: config.reviewName,
         maxInvestigationTurns,
