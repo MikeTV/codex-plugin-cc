@@ -256,12 +256,43 @@ export function saveState(cwd, state) {
     removeFileIfExists(job.eventFile);
   }
 
-  fs.writeFileSync(resolveStateFile(cwd), `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
+  replaceFile(resolveStateFile(cwd), `${JSON.stringify(nextState, null, 2)}\n`);
   return nextState;
 }
 
 function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// Readers do not take the state lock, so a write must never leave a partly written file in place.
+// Renaming a complete temp file over the target replaces it in one step.
+// On Windows the rename fails while another process has the target open; readers hold it for milliseconds.
+const RENAME_BUSY_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+const RENAME_TIMEOUT_MS = 1_000;
+const RENAME_RETRY_MS = 10;
+
+function replaceFile(filePath, content) {
+  const tempFile = `${filePath}.tmp-${process.pid}`;
+  fs.writeFileSync(tempFile, content, "utf8");
+  const deadline = Date.now() + RENAME_TIMEOUT_MS;
+  for (;;) {
+    try {
+      fs.renameSync(tempFile, filePath);
+      return;
+    } catch (error) {
+      if (!RENAME_BUSY_CODES.has(error.code)) {
+        fs.rmSync(tempFile, { force: true });
+        throw error;
+      }
+      if (Date.now() > deadline) {
+        fs.rmSync(tempFile, { force: true });
+        throw new Error(`Could not replace ${filePath}: it stayed in use for ${RENAME_TIMEOUT_MS} ms (${error.code}).`, {
+          cause: error
+        });
+      }
+    }
+    sleepSync(RENAME_RETRY_MS);
+  }
 }
 
 function isStaleLock(lockFile) {

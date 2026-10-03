@@ -63,6 +63,54 @@ test("parallel processes do not lose each other's job updates", async () => {
   }
 });
 
+test("readers never see a partly written state.json while other processes write", async () => {
+  const workspace = makeTempDir();
+  const pluginDataDir = makeTempDir();
+  const env = { ...process.env, CLAUDE_PLUGIN_DATA: pluginDataDir };
+  const previousPluginDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  process.env.CLAUDE_PLUGIN_DATA = pluginDataDir;
+
+  try {
+    saveState(workspace, { jobs: [] });
+    const stateFile = resolveStateFile(workspace);
+
+    // A 1 KB note per job makes state.json about 50 KB, so a reader often catches an in-place write half done.
+    let writersDone = false;
+    const writers = Promise.all(
+      Array.from({ length: 2 }, (_, worker) =>
+        runChild(
+          `import { upsertJob } from ${JSON.stringify(STATE_MODULE_URL)};
+           const note = "x".repeat(1024);
+           for (let i = 0; i < 25; i += 1) {
+             upsertJob(${JSON.stringify(workspace)}, { id: "w${worker}-" + i, status: "running", note });
+           }`,
+          env
+        )
+      )
+    ).finally(() => {
+      writersDone = true;
+    });
+
+    let reads = 0;
+    while (!writersDone) {
+      const text = await fs.promises.readFile(stateFile, "utf8");
+      assert.doesNotThrow(() => JSON.parse(text), `read ${reads} was not valid JSON (${text.length} chars)`);
+      reads += 1;
+    }
+    await writers;
+
+    assert.ok(reads > 0);
+    assert.equal(listJobs(workspace).length, 50);
+    assert.deepEqual(fs.readdirSync(path.dirname(stateFile)).filter((name) => name.includes(".tmp-")), []);
+  } finally {
+    if (previousPluginDataDir == null) {
+      delete process.env.CLAUDE_PLUGIN_DATA;
+    } else {
+      process.env.CLAUDE_PLUGIN_DATA = previousPluginDataDir;
+    }
+  }
+});
+
 test("a lock left by a dead process is cleared", () => {
   const workspace = makeTempDir();
   const pluginDataDir = makeTempDir();
