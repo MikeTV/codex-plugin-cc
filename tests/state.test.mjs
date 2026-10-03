@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 import { makeTempDir } from "./helpers.mjs";
 import {
@@ -63,7 +63,7 @@ test("parallel processes do not lose each other's job updates", async () => {
   }
 });
 
-test("a lock left by a dead process is cleared", () => {
+function upsertPastLeftoverLock(writeLock) {
   const workspace = makeTempDir();
   const pluginDataDir = makeTempDir();
   const previousPluginDataDir = process.env.CLAUDE_PLUGIN_DATA;
@@ -72,14 +72,14 @@ test("a lock left by a dead process is cleared", () => {
   try {
     const lockFile = `${resolveStateFile(workspace)}.lock`;
     fs.mkdirSync(path.dirname(lockFile), { recursive: true });
-    fs.writeFileSync(lockFile, "");
-    const oneMinuteAgo = new Date(Date.now() - 60_000);
-    fs.utimesSync(lockFile, oneMinuteAgo, oneMinuteAgo);
+    writeLock(lockFile);
+    const started = Date.now();
 
     upsertJob(workspace, { id: "job-1", status: "running" });
 
     assert.deepEqual(listJobs(workspace).map((job) => job.id), ["job-1"]);
     assert.equal(fs.existsSync(lockFile), false);
+    return Date.now() - started;
   } finally {
     if (previousPluginDataDir == null) {
       delete process.env.CLAUDE_PLUGIN_DATA;
@@ -87,6 +87,20 @@ test("a lock left by a dead process is cleared", () => {
       process.env.CLAUDE_PLUGIN_DATA = previousPluginDataDir;
     }
   }
+}
+
+test("a fresh lock held by a dead process is cleared at once", () => {
+  const deadPid = spawnSync(process.execPath, ["-e", ""]).pid;
+  const elapsedMs = upsertPastLeftoverLock((lockFile) => fs.writeFileSync(lockFile, String(deadPid)));
+  assert.ok(elapsedMs < 5_000, `took ${elapsedMs} ms`);
+});
+
+test("an empty lock older than the backstop is cleared", () => {
+  upsertPastLeftoverLock((lockFile) => {
+    fs.writeFileSync(lockFile, "");
+    const twoMinutesAgo = new Date(Date.now() - 120_000);
+    fs.utimesSync(lockFile, twoMinutesAgo, twoMinutesAgo);
+  });
 });
 
 test("resolveStateDir falls back to a HOME-anchored directory when CLAUDE_PLUGIN_DATA is unset", () => {
