@@ -1083,6 +1083,94 @@ test("--max-investigation-turns propagates from CLI to runAppServerInvestigation
   }
 });
 
+test("--self-collect forces the investigation turns on a diff small enough to inline", async () => {
+  const cwd = makeInlineGitFixture();
+  const fake = setupFakeCodex({ cwd });
+  try {
+    fake.queueTurnResponse({
+      commands: [{ command: "git diff main...HEAD", exitCode: 0 }],
+      finalAnswer: null
+    });
+    fake.queueTurnResponse({
+      commands: [],
+      finalAnswer: { text: "Investigation done." }
+    });
+    fake.queueTurnResponse({
+      finalAnswer: { text: JSON.stringify({ verdict: "approve", summary: "ok", findings: [], next_steps: [] }) }
+    });
+
+    const result = runCompanion(
+      ["adversarial-review", "--base", "main", "--scope", "branch", "--cwd", cwd, "--self-collect", "--json"],
+      fake.env
+    );
+
+    assert.equal(result.status, 0, `expected exit 0, stderr: ${result.stderr}`);
+    const payload = JSON.parse(result.stdout.trim());
+    assert.equal(payload.investigation.turnCount, 2);
+  } finally {
+    // No rmSync: on Windows the companion's app-server can still hold the directory, and EPERM in
+    // finally would hide an assertion failure. The OS temp cleanup removes it.
+    fake.close();
+  }
+});
+
+test("--image-dir resolves against --cwd and attaches the images to the first investigation turn only", async () => {
+  const cwd = makeInlineGitFixture();
+  const imageDir = path.join(cwd, "shots");
+  mkdirSync(imageDir);
+  writeFileSync(path.join(imageDir, "b.png"), "png");
+  writeFileSync(path.join(imageDir, "a.JPG"), "jpg");
+  writeFileSync(path.join(imageDir, "notes.txt"), "not an image");
+  const fake = setupFakeCodex({ cwd });
+  try {
+    fake.queueTurnResponse({
+      commands: [{ command: "git diff main...HEAD", exitCode: 0 }],
+      finalAnswer: null
+    });
+    fake.queueTurnResponse({
+      commands: [],
+      finalAnswer: { text: "Investigation done." }
+    });
+    fake.queueTurnResponse({
+      finalAnswer: { text: JSON.stringify({ verdict: "approve", summary: "ok", findings: [], next_steps: [] }) }
+    });
+
+    const result = runCompanion(
+      ["adversarial-review", "--base", "main", "--scope", "branch", "--cwd", cwd, "--self-collect", "--image-dir", "shots", "--json"],
+      fake.env
+    );
+
+    assert.equal(result.status, 0, `expected exit 0, stderr: ${result.stderr}`);
+    const turnInputs = fake.requests.filter((r) => r.method === "turn/start").map((r) => r.params.input);
+    assert.deepEqual(
+      turnInputs[0].filter((item) => item.type === "localImage").map((item) => item.path),
+      [path.join(imageDir, "a.JPG"), path.join(imageDir, "b.png")]
+    );
+    for (const input of turnInputs.slice(1)) {
+      assert.equal(input.some((item) => item.type === "localImage"), false);
+    }
+  } finally {
+    // No rmSync: see the --self-collect test above.
+    fake.close();
+  }
+});
+
+test("--image-dir fails when the folder has no images", () => {
+  const imageDir = mkdtempSync(path.join(tmpdir(), "codex-review-no-images-"));
+  writeFileSync(path.join(imageDir, "notes.txt"), "not an image");
+  const r = spawnSync("node", [COMPANION_PATH, "adversarial-review", "--image-dir", imageDir], { encoding: "utf8", timeout: 30000 });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /--image-dir has no \.png/);
+});
+
+test("review rejects --self-collect and --image-dir", () => {
+  for (const flag of [["--self-collect"], ["--image-dir", tmpdir()]]) {
+    const r = spawnSync("node", [COMPANION_PATH, "review", ...flag], { encoding: "utf8", timeout: 30000 });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /--self-collect and --image-dir apply only to adversarial-review/);
+  }
+});
+
 test("invalid --max-investigation-turns raises a clear error", () => {
   const r = spawnSync("node",
     [COMPANION_PATH, "adversarial-review", "--max-investigation-turns", "abc"],
