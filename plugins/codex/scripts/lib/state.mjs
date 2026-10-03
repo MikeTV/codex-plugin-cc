@@ -15,8 +15,11 @@ const JOBS_DIR_NAME = "jobs";
 const MAX_JOBS = 50;
 // A holder keeps the lock only for one read-modify-write of state.json, which takes milliseconds.
 // A lock older than LOCK_STALE_MS belongs to a process that died; it is shorter than the wait timeout so waiters recover from it.
-const LOCK_STALE_MS = 10_000;
-const LOCK_TIMEOUT_MS = 15_000;
+// The timeout stays well under the 5 s SessionEnd hook timeout in hooks.json, so the hook still reaches its teardown.
+// Known gap, accepted: if two writers find the same stale lock at the same moment, the second can remove the first's new lock.
+// That needs a crash inside a millisecond hold plus a simultaneous collision, and costs one job update, as before the lock existed.
+const LOCK_STALE_MS = 2_000;
+const LOCK_TIMEOUT_MS = 3_000;
 const LOCK_RETRY_MS = 25;
 
 function nowIso() {

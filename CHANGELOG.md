@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Parallel companion processes in one workspace no longer lose each other's job updates.** `updateState` now holds a lock file (`state.json.lock`) for each read-modify-write. Without the lock, four parallel writers kept 10 of 40 jobs in a test. A lock older than 10 seconds belongs to a process that died, and the next writer removes it. A writer that cannot get the lock in 15 seconds fails with an error. The SessionEnd hook now writes through `updateState` as well.
+- **Parallel companion processes in one workspace no longer lose each other's job updates.** `updateState` now holds a lock file (`state.json.lock`) for each read-modify-write. Without the lock, four parallel writers kept 10 of 40 jobs in a test. A lock older than 2 seconds belongs to a process that died, and the next writer removes it. A writer that cannot get the lock in 3 seconds fails with an error, which keeps the SessionEnd hook inside its 5-second limit. The SessionEnd hook now writes through `updateState` as well, and it stops the session workers before it removes their records.
 - `tests/codex-config.test.mjs` faked the home directory by setting `HOME` only; `os.homedir()` reads `USERPROFILE` on Windows, so the user-level-config tests read the developer's real `~/.codex/config.toml` and failed. The tests now set both variables.
 
 ## [1.4.0] - 2026-05-23
